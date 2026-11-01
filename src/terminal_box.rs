@@ -11,12 +11,12 @@ use cosmic::{
     cosmic_theme::palette::{blend::Compose, WithAlpha},
     iced::{
         advanced::graphics::text::Raw,
-        event::{Event, Status},
+        event::Event,
         keyboard::{Event as KeyEvent, Key, Modifiers},
         mouse::{self, Button, Event as MouseEvent, ScrollDelta},
         Color, Element, Length, Padding, Point, Rectangle, Size, Vector,
     },
-    iced_core::{
+    iced::core::{
         clipboard::Clipboard,
         keyboard::key::Named,
         layout::{self, Layout},
@@ -164,7 +164,7 @@ where
     }
 
     fn layout(
-        &self,
+        &mut self,
         _tree: &mut widget::Tree,
         _renderer: &Renderer,
         limits: &layout::Limits,
@@ -198,15 +198,15 @@ where
     }
 
     fn operate(
-        &self,
+        &mut self,
         tree: &mut widget::Tree,
-        _layout: Layout<'_>,
+        layout: Layout<'_>,
         _renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
         let state = tree.state.downcast_mut::<State>();
 
-        operation.focusable(state, self.id.as_ref());
+        operation.focusable(self.id.as_ref(), layout.bounds(), state);
     }
 
     fn mouse_interaction(
@@ -261,10 +261,10 @@ where
 
         let view_position = layout.position() + [self.padding.left, self.padding.top].into();
         let view_w = cmp::min(viewport.width as i32, layout.bounds().width as i32)
-            - self.padding.horizontal() as i32
+            - (self.padding.left + self.padding.right) as i32
             - scrollbar_w as i32;
         let view_h = cmp::min(viewport.height as i32, layout.bounds().height as i32)
-            - self.padding.vertical() as i32;
+            - (self.padding.top + self.padding.bottom) as i32;
 
         if view_w <= 0 || view_h <= 0 {
             // Zero sized image
@@ -301,10 +301,10 @@ where
                     },
                     ..Default::default()
                 },
-                Color::new(
-                    f32::from(background_color.r()) / 255.0,
-                    f32::from(background_color.g()) / 255.0,
-                    f32::from(background_color.b()) / 255.0,
+                Color::from_rgba8(
+                    background_color.r(),
+                    background_color.g(),
+                    background_color.b(),
                     match self.opacity {
                         Some(opacity) => opacity,
                         None => f32::from(background_color.a()) / 255.0,
@@ -352,10 +352,10 @@ where
                         is_focused: bool,
                     ) {
                         let cosmic_text_to_iced_color = |color: cosmic_text::Color| {
-                            Color::new(
-                                f32::from(color.r()) / 255.0,
-                                f32::from(color.g()) / 255.0,
-                                f32::from(color.b()) / 255.0,
+                            Color::from_rgba8(
+                                color.r(),
+                                color.g(),
+                                color.b(),
                                 f32::from(color.a()) / 255.0,
                             )
                         };
@@ -529,7 +529,7 @@ where
         renderer.fill_raw(Raw {
             buffer: terminal.buffer_weak(),
             position: view_position,
-            color: Color::new(1.0, 1.0, 1.0, 1.0), // TODO
+            color: Color::WHITE, // TODO
             clip_bounds: Rectangle::new(view_position, Size::new(view_w as f32, view_h as f32)),
         });
 
@@ -568,7 +568,7 @@ where
             let scrollbar_color: Color = if pressed {
                 // pressed_state_color, 0.5
                 cosmic_theme
-                    .background
+                    .background(false)
                     .component
                     .pressed
                     .without_alpha()
@@ -578,7 +578,7 @@ where
             } else if hover {
                 // hover_state_color, 0.2
                 cosmic_theme
-                    .background
+                    .background(false)
                     .component
                     .hover
                     .without_alpha()
@@ -651,17 +651,17 @@ where
         log::trace!("redraw {}, {}: {:?}", view_w, view_h, duration);
     }
 
-    fn on_event(
+    fn update(
         &mut self,
         tree: &mut widget::Tree,
-        event: Event,
+        event: &Event,
         layout: Layout<'_>,
         cursor_position: mouse::Cursor,
         _renderer: &Renderer,
         _clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle<f32>,
-    ) -> Status {
+    ) {
         let state = tree.state.downcast_mut::<State>();
         let scrollbar_rect = state.scrollbar_rect.get();
         let mut terminal = self.terminal.lock().unwrap();
@@ -669,17 +669,15 @@ where
 
         let is_app_cursor = terminal.term.lock().mode().contains(TermMode::APP_CURSOR);
         let is_mouse_mode = terminal.term.lock().mode().intersects(TermMode::MOUSE_MODE);
-        let mut status = Status::Ignored;
         match event {
             Event::Keyboard(KeyEvent::KeyPressed {
                 key: Key::Named(named),
                 modifiers,
-                text,
                 ..
             }) if state.is_focused => {
                 for key_bind in self.key_binds.keys() {
-                    if key_bind.matches(modifiers, &Key::Named(named)) {
-                        return Status::Captured;
+                    if key_bind.matches(*modifiers, &Key::Named(*named), None) {
+                        shell.capture_event(); return;
                     }
                 }
 
@@ -767,7 +765,7 @@ where
                 };
                 if let Some(escape_code) = escape_code {
                     terminal.input_scroll(escape_code);
-                    return Status::Captured;
+                    shell.capture_event(); return;
                 }
 
                 //Special handle Enter, Escape, Backspace and Tab as described in
@@ -778,11 +776,11 @@ where
                     Named::Backspace => {
                         let code = if modifiers.control() { "\x08" } else { "\x7f" };
                         terminal.input_scroll(format!("{alt_prefix}{code}").into_bytes());
-                        status = Status::Captured;
+                        shell.capture_event();
                     }
                     Named::Enter => {
                         terminal.input_scroll(format!("{}{}", alt_prefix, "\x0D").into_bytes());
-                        status = Status::Captured;
+                        shell.capture_event();
                     }
                     Named::Escape => {
                         //Escape with any modifier will cancel selection
@@ -795,31 +793,18 @@ where
                         } else {
                             terminal.input_scroll(format!("{}{}", alt_prefix, "\x1B").into_bytes());
                         }
-                        status = Status::Captured;
-                    }
-                    Named::Space => {
-                        // Keep this instead of hardcoding the space to allow for dead keys
-                        let character = text.and_then(|c| c.chars().next()).unwrap_or_default();
-
-                        if modifiers.control() {
-                            // Send NUL character (\x00) for Ctrl + Space
-                            terminal.input_scroll(b"\x00".to_vec());
-                        } else {
-                            terminal
-                                .input_scroll(format!("{}{}", alt_prefix, character).into_bytes());
-                        }
-                        status = Status::Captured;
+                        shell.capture_event();
                     }
                     Named::Tab => {
                         let code = if modifiers.shift() { "\x1b[Z" } else { "\x09" };
                         terminal.input_scroll(format!("{alt_prefix}{code}").into_bytes());
-                        status = Status::Captured;
+                        shell.capture_event();
                     }
                     _ => {}
                 }
             }
             Event::Keyboard(KeyEvent::ModifiersChanged(modifiers)) => {
-                state.modifiers = modifiers;
+                state.modifiers = *modifiers;
             }
             Event::Keyboard(KeyEvent::KeyPressed {
                 text,
@@ -828,8 +813,8 @@ where
                 ..
             }) if state.is_focused => {
                 for key_bind in self.key_binds.keys() {
-                    if key_bind.matches(modifiers, &key) {
-                        return Status::Captured;
+                    if key_bind.matches(*modifiers, key, None) {
+                        shell.capture_event(); return;
                     }
                 }
                 match key.clone() {
@@ -918,7 +903,7 @@ where
                         };
                         if let Some(escape_code) = escape_code {
                             terminal.input_scroll(escape_code);
-                            return Status::Captured;
+                            shell.capture_event(); return;
                         }
 
                         //Special handle Enter, Escape, Backspace and Tab as described in
@@ -929,12 +914,12 @@ where
                             Named::Backspace => {
                                 let code = if modifiers.control() { "\x08" } else { "\x7f" };
                                 terminal.input_scroll(format!("{alt_prefix}{code}").into_bytes());
-                                status = Status::Captured;
+                                shell.capture_event();
                             }
                             Named::Enter => {
                                 terminal
                                     .input_scroll(format!("{}{}", alt_prefix, "\x0D").into_bytes());
-                                status = Status::Captured;
+                                shell.capture_event();
                             }
                             Named::Escape => {
                                 //Escape with any modifier will cancel selection
@@ -949,39 +934,41 @@ where
                                         format!("{}{}", alt_prefix, "\x1B").into_bytes(),
                                     );
                                 }
-                                status = Status::Captured;
-                            }
-                            Named::Space => {
-                                // Keep this instead of hardcoding the space to allow for dead keys
-                                let character =
-                                    text.and_then(|c| c.chars().next()).unwrap_or_default();
-
-                                if modifiers.control() {
-                                    // Send NUL character (\x00) for Ctrl + Space
-                                    terminal.input_scroll(b"\x00".to_vec());
-                                } else {
-                                    terminal.input_scroll(
-                                        format!("{}{}", alt_prefix, character).into_bytes(),
-                                    );
-                                }
-                                status = Status::Captured;
+                                shell.capture_event();
                             }
                             Named::Tab => {
                                 let code = if modifiers.shift() { "\x1b[Z" } else { "\x09" };
                                 terminal.input_scroll(format!("{alt_prefix}{code}").into_bytes());
-                                status = Status::Captured;
+                                shell.capture_event();
                             }
                             _ => {}
                         }
                     }
-                    Key::Character(_c) => {
-                        let character = text.and_then(|c| c.chars().next()).unwrap_or_default();
-                        match (
-                            modifiers.logo(),
-                            modifiers.control(),
-                            modifiers.alt(),
-                            modifiers.shift(),
-                        ) {
+                    Key::Character(c) => {
+                        let character = text.as_deref().and_then(|c| c.chars().next()).unwrap_or_default();
+                        if c.as_str() == " " {
+                            // Space is a character key in iced 0.19
+                            if modifiers.control() {
+                                // Send NUL character (\x00) for Ctrl + Space
+                                terminal.input_scroll(b"\x00".to_vec());
+                            } else {
+                                terminal.input_scroll(
+                                    format!(
+                                        "{}{}",
+                                        if modifiers.alt() { "\x1B" } else { "" },
+                                        character
+                                    )
+                                    .into_bytes(),
+                                );
+                            }
+                            shell.capture_event();
+                        } else {
+                            match (
+                                modifiers.logo(),
+                                modifiers.control(),
+                                modifiers.alt(),
+                                modifiers.shift(),
+                            ) {
                             (true, _, _, _) => {
                                 // Ignore super
                             }
@@ -996,7 +983,7 @@ where
                                         str.len() + 1
                                     };
                                     terminal.input_scroll(buf[..len].to_vec());
-                                    status = Status::Captured;
+                                    shell.capture_event();
                                 }
                             }
                             (false, true, _, false) => {
@@ -1005,7 +992,7 @@ where
                                     let mut buf = [0, 0, 0, 0];
                                     let str = character.encode_utf8(&mut buf);
                                     terminal.input_scroll(str.as_bytes().to_vec());
-                                    status = Status::Captured;
+                                    shell.capture_event();
                                 }
                             }
                             (false, true, _, true) => {
@@ -1013,9 +1000,9 @@ where
                                 //is taken by zoom, we send that code for
                                 //Ctrl+Underline instead, like xterm and
                                 //gnome-terminal
-                                if key == Key::Character("_".into()) {
+                                if key == &Key::Character("_".into()) {
                                     terminal.input_scroll(b"\x1F".as_slice());
-                                    status = Status::Captured;
+                                    shell.capture_event();
                                 }
                             }
                             (false, false, true, _) => {
@@ -1027,7 +1014,7 @@ where
                                         str.len() + 1
                                     };
                                     terminal.input_scroll(buf[..len].to_vec());
-                                    status = Status::Captured;
+                                    shell.capture_event();
                                 }
                             }
                             (false, false, false, _) => {
@@ -1036,9 +1023,10 @@ where
                                     let mut buf = [0, 0, 0, 0];
                                     let str = character.encode_utf8(&mut buf);
                                     terminal.input_scroll(str.as_bytes().to_vec());
-                                    status = Status::Captured;
+                                    shell.capture_event();
                                 }
                             }
+                        }
                         }
                     }
                     Key::Unidentified => {}
@@ -1053,7 +1041,7 @@ where
                     let row = y / terminal.size().cell_height;
 
                     if is_mouse_mode {
-                        terminal.report_mouse(event, &state.modifiers, col as u32, row as u32);
+                        terminal.report_mouse(event.clone(), &state.modifiers, col as u32, row as u32);
                     } else {
                         state.is_focused = true;
 
@@ -1130,7 +1118,7 @@ where
                                     }
                                 }
                             }
-                        } else if button == Button::Middle {
+                        } else if button == &Button::Middle {
                             if let Some(on_middle_click) = &self.on_middle_click {
                                 shell.publish(on_middle_click());
                             }
@@ -1145,7 +1133,7 @@ where
                                 },
                             }));
                         }
-                        status = Status::Captured;
+                        shell.capture_event();
                     }
                 }
             }
@@ -1158,12 +1146,12 @@ where
                     let col = x / terminal.size().cell_width;
                     let row = y / terminal.size().cell_height;
                     if is_mouse_mode {
-                        terminal.report_mouse(event, &state.modifiers, col as u32, row as u32);
+                        terminal.report_mouse(event.clone(), &state.modifiers, col as u32, row as u32);
                     } else {
-                        status = Status::Captured;
+                        shell.capture_event();
                     }
                 } else {
-                    status = Status::Captured;
+                    shell.capture_event();
                 }
             }
             Event::Mouse(MouseEvent::ButtonReleased(_button)) => {
@@ -1174,7 +1162,7 @@ where
                     let col = x / terminal.size().cell_width;
                     let row = y / terminal.size().cell_height;
                     if is_mouse_mode {
-                        terminal.report_mouse(event, &state.modifiers, col as u32, row as u32);
+                        terminal.report_mouse(event.clone(), &state.modifiers, col as u32, row as u32);
                     }
                 }
             }
@@ -1199,7 +1187,7 @@ where
                     let col = x / terminal.size().cell_width;
                     let row = y / terminal.size().cell_height;
                     if is_mouse_mode {
-                        terminal.report_mouse(event, &state.modifiers, col as u32, row as u32);
+                        terminal.report_mouse(event.clone(), &state.modifiers, col as u32, row as u32);
                     } else {
                         if let Some(dragging) = &state.dragging {
                             match dragging {
@@ -1232,7 +1220,7 @@ where
                                 }
                             }
                         }
-                        status = Status::Captured;
+                        shell.capture_event();
                     }
                 }
             }
@@ -1244,7 +1232,7 @@ where
                         //TODO: better calculation of position
                         let col = x / terminal.size().cell_width;
                         let row = y / terminal.size().cell_height;
-                        terminal.scroll_mouse(delta, &state.modifiers, col as u32, row as u32);
+                        terminal.scroll_mouse(delta.clone(), &state.modifiers, col as u32, row as u32);
                     } else {
                         match delta {
                             ScrollDelta::Lines { x: _, y } => {
@@ -1254,7 +1242,7 @@ where
                                 if lines != 0 {
                                     terminal.scroll(TerminalScroll::Delta(-lines));
                                 }
-                                status = Status::Captured;
+                                shell.capture_event();
                             }
                             ScrollDelta::Pixels { x: _, y } => {
                                 //TODO: this adjustment is just a guess!
@@ -1272,7 +1260,7 @@ where
                                 if lines != 0 {
                                     terminal.scroll(TerminalScroll::Delta(-lines));
                                 }
-                                status = Status::Captured;
+                                shell.capture_event();
                             }
                         }
                     }
@@ -1280,8 +1268,6 @@ where
             }
             _ => (),
         }
-
-        status
     }
 }
 

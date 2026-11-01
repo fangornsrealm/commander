@@ -1,10 +1,8 @@
 //! The state of a [`PaneGrid`].
 //!
 //! [`PaneGrid`]: super::PaneGrid
+use crate::pane_grid::{Axis, Configuration, Direction, Edge, Node, Pane, Region, Split, Target};
 use cosmic::iced::core::{Point, Size};
-use crate::pane_grid::{
-    Axis, Configuration, Direction, Edge, Node, Pane, Region, Split, Target,
-};
 
 use rustc_hash::FxHashMap;
 
@@ -53,8 +51,7 @@ impl<T> State<T> {
     pub fn with_configuration(config: impl Into<Configuration<T>>) -> Self {
         let mut panes = FxHashMap::default();
 
-        let internal =
-            Internal::from_configuration(&mut panes, config.into(), 0);
+        let internal = Internal::from_configuration(&mut panes, config.into(), 0);
 
         State {
             panes,
@@ -112,24 +109,19 @@ impl<T> State<T> {
         let current_region = regions.get(&pane)?;
 
         let target = match direction {
-            Direction::Left => {
-                Point::new(current_region.x - 1.0, current_region.y + 1.0)
-            }
+            Direction::Left => Point::new(current_region.x - 1.0, current_region.y + 1.0),
             Direction::Right => Point::new(
                 current_region.x + current_region.width + 1.0,
                 current_region.y + 1.0,
             ),
-            Direction::Up => {
-                Point::new(current_region.x + 1.0, current_region.y - 1.0)
-            }
+            Direction::Up => Point::new(current_region.x + 1.0, current_region.y - 1.0),
             Direction::Down => Point::new(
                 current_region.x + 1.0,
                 current_region.y + current_region.height + 1.0,
             ),
         };
 
-        let mut colliding_regions =
-            regions.iter().filter(|(_, region)| region.contains(target));
+        let mut colliding_regions = regions.iter().filter(|(_, region)| region.contains(target));
 
         let (pane, _) = colliding_regions.next()?;
 
@@ -138,12 +130,7 @@ impl<T> State<T> {
 
     /// Splits the given [`Pane`] into two in the given [`Axis`] and
     /// initializing the new [`Pane`] with the provided internal state.
-    pub fn split(
-        &mut self,
-        axis: Axis,
-        pane: Pane,
-        state: T,
-    ) -> Option<(Pane, Split)> {
+    pub fn split(&mut self, axis: Axis, pane: Pane, state: T) -> Option<(Pane, Split)> {
         self.split_node(axis, Some(pane), state, false)
     }
 
@@ -218,13 +205,7 @@ impl<T> State<T> {
         Some((new_pane, new_split))
     }
 
-    fn split_and_swap(
-        &mut self,
-        axis: Axis,
-        target: Pane,
-        pane: Pane,
-        swap: bool,
-    ) {
+    fn split_and_swap(&mut self, axis: Axis, target: Pane, pane: Pane, swap: bool) {
         if let Some((state, _)) = self.close(pane) {
             if let Some((new_pane, _)) = self.split(axis, target, state) {
                 if swap {
@@ -254,12 +235,7 @@ impl<T> State<T> {
         }
     }
 
-    fn split_major_node_and_swap(
-        &mut self,
-        axis: Axis,
-        pane: Pane,
-        swap: bool,
-    ) {
+    fn split_major_node_and_swap(&mut self, axis: Axis, pane: Pane, swap: bool) {
         if let Some((state, _)) = self.close(pane) {
             let _ = self.split_node(axis, None, state, swap);
         }

@@ -49,3 +49,41 @@ impl TryFrom<(Vec<u8>, String)> for DndDrop {
         Ok(Self { paths })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_text_uri_list() {
+        let data = b"file:///home/user/a.txt\nfile:///home/user/b.txt\n".to_vec();
+        let dnd: DndDrop = DndDrop::try_from((data, "text/uri-list".to_string())).unwrap();
+        assert_eq!(dnd.paths.len(), 2);
+        assert_eq!(dnd.paths[0], PathBuf::from("/home/user/a.txt"));
+        assert_eq!(dnd.paths[1], PathBuf::from("/home/user/b.txt"));
+    }
+
+    #[test]
+    fn parses_gnome_copied_files_skipping_action_line() {
+        let data = b"copy\nfile:///home/user/c.txt\nfile:///home/user/d.txt\n".to_vec();
+        let dnd: DndDrop =
+            DndDrop::try_from((data, "x-special/gnome-copied-files".to_string())).unwrap();
+        assert_eq!(dnd.paths.len(), 2);
+        assert_eq!(dnd.paths[0], PathBuf::from("/home/user/c.txt"));
+        assert_eq!(dnd.paths[1], PathBuf::from("/home/user/d.txt"));
+    }
+
+    #[test]
+    fn rejects_invalid_file_url() {
+        let data = b"file:///home/user/ok.txt\nhttp://not-a-file-path\n".to_vec();
+        let result = DndDrop::try_from((data, "text/uri-list".to_string()));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_mime_type() {
+        let data = b"file:///home/user/e.txt\n".to_vec();
+        let result = DndDrop::try_from((data, "application/octet-stream".to_string()));
+        assert!(result.is_err());
+    }
+}

@@ -12,16 +12,10 @@ pub enum Axis {
 impl Axis {
     /// Splits the provided [`Rectangle`] on the current [`Axis`] with the
     /// given `ratio` and `spacing`.
-    pub fn split(
-        &self,
-        rectangle: &Rectangle,
-        ratio: f32,
-        spacing: f32,
-    ) -> (Rectangle, Rectangle) {
+    pub fn split(&self, rectangle: &Rectangle, ratio: f32, spacing: f32) -> (Rectangle, Rectangle) {
         match self {
             Axis::Horizontal => {
-                let height_top =
-                    (rectangle.height * ratio - spacing / 2.0).round();
+                let height_top = (rectangle.height * ratio - spacing / 2.0).round();
                 let height_bottom = rectangle.height - height_top - spacing;
 
                 (
@@ -37,8 +31,7 @@ impl Axis {
                 )
             }
             Axis::Vertical => {
-                let width_left =
-                    (rectangle.width * ratio - spacing / 2.0).round();
+                let width_left = (rectangle.width * ratio - spacing / 2.0).round();
                 let width_right = rectangle.width - width_left - spacing;
 
                 (
@@ -57,23 +50,16 @@ impl Axis {
     }
 
     /// Calculates the bounds of the split line in a [`Rectangle`] region.
-    pub fn split_line_bounds(
-        &self,
-        rectangle: Rectangle,
-        ratio: f32,
-        spacing: f32,
-    ) -> Rectangle {
+    pub fn split_line_bounds(&self, rectangle: Rectangle, ratio: f32, spacing: f32) -> Rectangle {
         match self {
             Axis::Horizontal => Rectangle {
                 x: rectangle.x,
-                y: (rectangle.y + rectangle.height * ratio - spacing / 2.0)
-                    .round(),
+                y: (rectangle.y + rectangle.height * ratio - spacing / 2.0).round(),
                 width: rectangle.width,
                 height: spacing,
             },
             Axis::Vertical => Rectangle {
-                x: (rectangle.x + rectangle.width * ratio - spacing / 2.0)
-                    .round(),
+                x: (rectangle.x + rectangle.width * ratio - spacing / 2.0).round(),
                 y: rectangle.y,
                 width: spacing,
                 height: rectangle.height,

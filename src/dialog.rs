@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic::{
-    app::{self, context_drawer, cosmic::Cosmic, message, Core, Task},
+    app::{context_drawer, cosmic::Cosmic, Core, Task},
     cosmic_config, cosmic_theme, executor,
     iced::{
         event,
@@ -25,7 +25,6 @@ use notify_debouncer_full::{
 };
 use recently_used_xbel::update_recently_used;
 use std::{
-    any::TypeId,
     collections::{HashMap, HashSet, VecDeque},
     env, fmt, fs,
     num::NonZeroU16,
@@ -35,7 +34,7 @@ use std::{
 };
 
 use crate::{
-    app::{Action, ContextPage, Message as AppMessage, PreviewItem1, PreviewKind},
+    app::{Action, ContextPage, Message as AppMessage, PreviewItem, PreviewKind},
     config::{Config, Favorite, IconSizes, TabConfig1},
     fl, home_dir,
     key_bind::key_binds,
@@ -46,7 +45,7 @@ use crate::{
 };
 
 #[derive(Clone, Debug)]
-pub struct DialogMessage(app::Message<Message>);
+pub struct DialogMessage(cosmic::Action<Message>);
 
 #[derive(Clone, Debug)]
 pub enum DialogResult {
@@ -200,10 +199,10 @@ impl<M: Send + 'static> Dialog<M> {
                 on_result: Box::new(on_result),
             },
             Task::batch([
-                window_command.map(|_id| message::none()),
+                window_command.map(|_id| cosmic::action::none()),
                 cosmic_command
                     .map(DialogMessage)
-                    .map(move |message| app::Message::App(mapper(message))),
+                    .map(move |message| cosmic::Action::App(mapper(message))),
             ]),
         )
     }
@@ -215,7 +214,7 @@ impl<M: Send + 'static> Dialog<M> {
             .app
             .update_title()
             .map(DialogMessage)
-            .map(move |message| app::Message::App(mapper(message)))
+            .map(move |message| cosmic::Action::App(mapper(message)))
     }
 
     pub fn set_accept_label(&mut self, accept_label: impl Into<String>) {
@@ -246,7 +245,7 @@ impl<M: Send + 'static> Dialog<M> {
             .app
             .rescan_tab()
             .map(DialogMessage)
-            .map(move |message| app::Message::App(mapper(message)))
+            .map(move |message| cosmic::Action::App(mapper(message)))
     }
 
     pub fn subscription(&self) -> Subscription<M> {
@@ -263,19 +262,19 @@ impl<M: Send + 'static> Dialog<M> {
             .cosmic
             .update(message.0)
             .map(DialogMessage)
-            .map(move |message| app::Message::App(mapper(message)));
+            .map(move |message| cosmic::Action::App(mapper(message)));
         if let Some(result) = self.cosmic.app.result_opt.take() {
             let on_result_message = (self.on_result)(result);
             Task::batch([
                 command,
-                Task::perform(async move { app::Message::App(on_result_message) }, |x| x),
+                Task::perform(async move { cosmic::Action::App(on_result_message) }, |x| x),
             ])
         } else {
             command
         }
     }
 
-    pub fn view(&self, window_id: window::Id) -> Element<M> {
+    pub fn view(&self, window_id: window::Id) -> Element<'_, M> {
         self.cosmic
             .view(window_id)
             .map(DialogMessage)
@@ -406,7 +405,7 @@ struct App {
 }
 
 impl App {
-    fn button_view(&self) -> Element<Message> {
+    fn button_view(&self) -> Element<'_, Message> {
         let cosmic_theme::Spacing {
             space_xxs,
             space_xs,
@@ -419,7 +418,7 @@ impl App {
                 widget::text_input("", filename)
                     .id(self.filename_id.clone())
                     .on_input(Message::Filename)
-                    .on_submit(Message::Save(false)),
+                    .on_submit(|_name| Message::Save(false)),
             );
         }
 
@@ -438,7 +437,7 @@ impl App {
         for (choice_i, choice) in self.choices.iter().enumerate() {
             match choice {
                 DialogChoice::CheckBox { label, value, .. } => {
-                    row = row.push(widget::checkbox(label, *value).on_toggle(move |checked| {
+                    row = row.push(widget::checkbox(*value).label(label).on_toggle(move |checked| {
                         Message::Choice(choice_i, if checked { 1 } else { 0 })
                     }));
                 }
@@ -455,7 +454,7 @@ impl App {
                 }
             }
         }
-        row = row.push(widget::horizontal_space());
+        row = row.push(widget::space::horizontal());
         row = row.push(widget::button::standard(fl!("cancel")).on_press(Message::Cancel));
         row = row.push(if self.flags.kind.save() {
             widget::button::suggested(&self.accept_label).on_press(Message::Save(false))
@@ -474,10 +473,10 @@ impl App {
     fn preview<'a>(&'a self, kind: &'a PreviewKind) -> Element<'a, tab1::Message> {
         let mut children = Vec::with_capacity(1);
         match kind {
-            PreviewKind::Custom1(PreviewItem1(item)) => {
+            PreviewKind::Custom(PreviewItem(item)) => {
                 children.push(item.preview_view(None, IconSizes::default()).into());
             }
-            PreviewKind::Location1(location) => {
+            PreviewKind::Location(location) => {
                 if let Some(items) = self.tab.items_opt() {
                     for item in items.iter() {
                         if item.location_opt.as_ref() == Some(location) {
@@ -506,7 +505,6 @@ impl App {
                     }
                 }
             }
-            _ => {}
         }
         widget::column::with_children(children).into()
     }
@@ -519,11 +517,11 @@ impl App {
                 let location2 = location.clone();
                 match tokio::task::spawn_blocking(move || location2.scan(icon_sizes)).await {
                     Ok((parent_item_opt, items)) => {
-                        message::app(Message::TabRescan(location, parent_item_opt, items))
+                        cosmic::action::app(Message::TabRescan(location, parent_item_opt, items))
                     }
                     Err(err) => {
                         log::warn!("failed to rescan: {}", err);
-                        message::none()
+                        cosmic::action::none()
                     }
                 }
             },
@@ -553,7 +551,9 @@ impl App {
                 _ => None,
             },
             None => match &self.tab.location {
-                tab1::Location::Search(path, ..) => Some((tab1::Location::Path(path.to_path_buf()), false)),
+                tab1::Location::Search(path, ..) => {
+                    Some((tab1::Location::Path(path.to_path_buf()), false))
+                }
                 _ => None,
             },
         };
@@ -801,7 +801,7 @@ impl Application for App {
         (app, commands)
     }
 
-    fn context_drawer(&self) -> Option<context_drawer::ContextDrawer<Message>> {
+    fn context_drawer(&self) -> Option<context_drawer::ContextDrawer<'_, Message>> {
         if !self.core.window.show_context {
             return None;
         }
@@ -825,14 +825,14 @@ impl Application for App {
                         self.preview(kind).map(Message::TabMessage),
                         Message::Preview,
                     )
-                    .header_actions(actions),
+                    .actions(widget::row::with_children(actions)),
                 )
             }
             _ => None,
         }
     }
 
-    fn dialog(&self) -> Option<Element<Message>> {
+    fn dialog(&self) -> Option<Element<'_, Message>> {
         let cosmic_theme::Spacing { space_xxs, .. } = theme::active().cosmic().spacing;
 
         //TODO: should gallery view just be a dialog?
@@ -909,7 +909,7 @@ impl Application for App {
                                         name,
                                     })
                                 })
-                                .on_submit_maybe(complete_maybe)
+                                .on_submit_maybe(complete_maybe.map(|m| move |_name| m.clone()))
                                 .into(),
                         ])
                         .spacing(space_xxs),
@@ -930,11 +930,11 @@ impl Application for App {
         Some(dialog.into())
     }
 
-    fn footer(&self) -> Option<Element<Message>> {
+    fn footer(&self) -> Option<Element<'_, Message>> {
         Some(self.button_view())
     }
 
-    fn header_end(&self) -> Vec<Element<Message>> {
+    fn header_end(&self) -> Vec<Element<'_, Message>> {
         let mut elements = Vec::with_capacity(3);
 
         if let Some(term) = self.search_get() {
@@ -985,7 +985,7 @@ impl Application for App {
         elements
     }
 
-    fn nav_bar(&self) -> Option<Element<message::Message<Self::Message>>> {
+    fn nav_bar(&self) -> Option<Element<'_, cosmic::Action<Self::Message>>> {
         if !self.core().nav_bar_active() {
             return None;
         }
@@ -993,9 +993,9 @@ impl Application for App {
         let nav_model = self.nav_model()?;
 
         let mut nav = cosmic::widget::nav_bar(nav_model, |entity| {
-            cosmic::app::Message::Cosmic(cosmic::app::cosmic::Message::NavBar(entity))
+            cosmic::Action::Cosmic(cosmic::app::Action::NavBar(entity))
         })
-        //TODO .on_close(|entity| cosmic::app::Message::App(Message::NavBarClose(entity)))
+        //TODO .on_close(|entity| cosmic::Action::App(Message::NavBarClose(entity)))
         .close_icon(
             widget::icon::from_name("media-eject-symbolic")
                 .size(16)
@@ -1031,7 +1031,7 @@ impl Application for App {
 
         if let Some(data) = self.nav_model.data::<MounterData>(entity) {
             if let Some(mounter) = MOUNTERS.get(&data.0) {
-                return mounter.mount(data.1.clone()).map(|_| message::none());
+                return mounter.mount(data.1.clone()).map(|_| cosmic::action::none());
             }
         }
         Task::none()
@@ -1153,7 +1153,7 @@ impl Application for App {
             }
             Message::Key(modifiers, key) => {
                 for (key_bind, action) in self.key_binds.iter() {
-                    if key_bind.matches(modifiers, &key) {
+                    if key_bind.matches(modifiers, &key, None) {
                         return self.update(Message::from(action.message()));
                     }
                 }
@@ -1406,7 +1406,7 @@ impl Application for App {
                         tab1::Command::Iced(iced_command) => {
                             commands.push(
                                 iced_command.0.map(|tab_message| {
-                                    message::app(Message::TabMessage(tab_message))
+                                    cosmic::action::app(Message::TabMessage(tab_message))
                                 }),
                             );
                         }
@@ -1569,7 +1569,7 @@ impl Application for App {
     }
 
     /// Creates a view after each update.
-    fn view(&self) -> Element<Message> {
+    fn view(&self) -> Element<'_, Message> {
         let cosmic_theme::Spacing { space_xxs, .. } = theme::active().cosmic().spacing;
 
         let mut col = widget::column::with_capacity(2);
@@ -1595,7 +1595,6 @@ impl Application for App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        struct WatcherSubscription;
         let mut subscriptions = vec![
             event::listen_with(|event, status, _window_id| match event {
                 Event::Keyboard(KeyEvent::KeyPressed { key, modifiers, .. }) => match status {
@@ -1617,9 +1616,7 @@ impl Application for App {
                 }
                 Message::Config(update.config)
             }),
-            Subscription::run_with_id(
-                TypeId::of::<WatcherSubscription>(),
-                stream::channel(100, |mut output| async move {
+            Subscription::run(|| stream::channel(100, |mut output: futures::channel::mpsc::Sender<Message>| async move {
                     let watcher_res = {
                         let mut output = output.clone();
                         new_debouncer(
@@ -1689,8 +1686,7 @@ impl Application for App {
                     }
 
                     std::future::pending().await
-                }),
-            ),
+                })),
             self.tab
                 .subscription(
                     self.core.window.show_context

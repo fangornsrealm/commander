@@ -1,25 +1,19 @@
-use cosmic::iced::widget::container;
-use cosmic::iced::core::event::{self, Event};
+use crate::pane_grid::{Draggable, TitleBar};
+use cosmic::iced::core::event::Event;
 use cosmic::iced::core::layout;
 use cosmic::iced::core::mouse;
 use cosmic::iced::core::overlay;
 use cosmic::iced::core::renderer;
 use cosmic::iced::core::widget::{self, Tree};
-use cosmic::iced::core::{
-    self, Clipboard, Element, Layout, Point, Rectangle, Shell, Size, Vector,
-};
-use crate::pane_grid::{Draggable, TitleBar};
+use cosmic::iced::core::{self, Clipboard, Element, Layout, Point, Rectangle, Shell, Size, Vector};
+use cosmic::iced::widget::container;
 
 /// The content of a [`Pane`].
 ///
 /// [`Pane`]: super::Pane
 #[allow(missing_debug_implementations)]
-pub struct Content<
-    'a,
-    Message,
-    Theme = cosmic::iced::Theme,
-    Renderer = cosmic::iced::Renderer,
-> where
+pub struct Content<'a, Message, Theme = cosmic::iced::Theme, Renderer = cosmic::iced::Renderer>
+where
     Theme: container::Catalog,
     Renderer: core::Renderer,
 {
@@ -43,20 +37,14 @@ where
     }
 
     /// Sets the [`TitleBar`] of the [`Content`].
-    pub fn title_bar(
-        mut self,
-        title_bar: TitleBar<'a, Message, Theme, Renderer>,
-    ) -> Self {
+    pub fn title_bar(mut self, title_bar: TitleBar<'a, Message, Theme, Renderer>) -> Self {
         self.title_bar = Some(title_bar);
         self
     }
 
     /// Sets the style of the [`Content`].
     #[must_use]
-    pub fn style(
-        mut self,
-        style: impl Fn(&Theme) -> container::Style + 'a,
-    ) -> Self
+    pub fn style(mut self, style: impl Fn(&Theme) -> container::Style + 'a) -> Self
     where
         Theme::Class<'a>: From<container::StyleFn<'a, Theme>>,
     {
@@ -164,12 +152,12 @@ where
     }
 
     pub(crate) fn layout(
-        &self,
+        &mut self,
         tree: &mut Tree,
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        if let Some(title_bar) = &self.title_bar {
+        if let Some(title_bar) = &mut self.title_bar {
             let max_size = limits.max();
 
             let title_bar_layout = title_bar.layout(
@@ -180,15 +168,12 @@ where
 
             let title_bar_size = title_bar_layout.size();
 
-            let body_layout = self.body.as_widget().layout(
+            let body_layout = self.body.as_widget_mut().layout(
                 &mut tree.children[0],
                 renderer,
                 &layout::Limits::new(
                     Size::ZERO,
-                    Size::new(
-                        max_size.width,
-                        max_size.height - title_bar_size.height,
-                    ),
+                    Size::new(max_size.width, max_size.height - title_bar_size.height),
                 ),
             );
 
@@ -200,22 +185,20 @@ where
                 ],
             )
         } else {
-            self.body.as_widget().layout(
-                &mut tree.children[0],
-                renderer,
-                limits,
-            )
+            self.body
+                .as_widget_mut()
+                .layout(&mut tree.children[0], renderer, limits)
         }
     }
 
     pub(crate) fn operate(
-        &self,
+        &mut self,
         tree: &mut Tree,
         layout: Layout<'_>,
         renderer: &Renderer,
         operation: &mut dyn widget::Operation,
     ) {
-        let body_layout = if let Some(title_bar) = &self.title_bar {
+        let body_layout = if let Some(title_bar) = &mut self.title_bar {
             let mut children = layout.children();
 
             title_bar.operate(
@@ -230,18 +213,42 @@ where
             layout
         };
 
-        self.body.as_widget().operate(
-            &mut tree.children[0],
-            body_layout,
-            renderer,
-            operation,
-        );
+        self.body
+            .as_widget_mut()
+            .operate(&mut tree.children[0], body_layout, renderer, operation);
     }
 
-    pub(crate) fn on_event(
+    /// Forwards `drag_destinations` to the body element so that the
+    /// per-pane `DndDestination` widgets register their own rectangles.
+    ///
+    /// The body is always stored at `state.children[0]` (see
+    /// `Content::state()`); the layout body is the second child node when a
+    /// title bar exists, otherwise it is the root node itself.
+    pub(crate) fn drag_destinations(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        dnd_rectangles: &mut cosmic::iced::core::clipboard::DndDestinationRectangles,
+    ) {
+        let body_state = &tree.children[0];
+        let body_layout = if self.title_bar.is_some() {
+            let mut children = layout.children();
+            children.next();
+            children.next().unwrap_or(layout)
+        } else {
+            layout
+        };
+
+        self.body
+            .as_widget()
+            .drag_destinations(body_state, body_layout, renderer, dnd_rectangles);
+    }
+
+    pub(crate) fn update(
         &mut self,
         tree: &mut Tree,
-        event: Event,
+        event: &Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
@@ -249,15 +256,13 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
         is_picked: bool,
-    ) -> event::Status {
-        let mut event_status = event::Status::Ignored;
-
+    ) {
         let body_layout = if let Some(title_bar) = &mut self.title_bar {
             let mut children = layout.children();
 
-            event_status = title_bar.on_event(
+            title_bar.update(
                 &mut tree.children[1],
-                event.clone(),
+                event,
                 children.next().unwrap(),
                 cursor,
                 renderer,
@@ -271,22 +276,20 @@ where
             layout
         };
 
-        let body_status = if is_picked {
-            event::Status::Ignored
-        } else {
-            self.body.as_widget_mut().on_event(
-                &mut tree.children[0],
-                event,
-                body_layout,
-                cursor,
-                renderer,
-                clipboard,
-                shell,
-                viewport,
-            )
-        };
+        if is_picked {
+            return;
+        }
 
-        event_status.merge(body_status)
+        self.body.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            body_layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
     }
 
     pub(crate) fn mouse_interaction(
@@ -298,17 +301,14 @@ where
         renderer: &Renderer,
         drag_enabled: bool,
     ) -> mouse::Interaction {
-        let (body_layout, title_bar_interaction) = if let Some(title_bar) =
-            &self.title_bar
-        {
+        let (body_layout, title_bar_interaction) = if let Some(title_bar) = &self.title_bar {
             let mut children = layout.children();
             let title_bar_layout = children.next().unwrap();
 
             let is_over_pick_area = cursor
                 .position()
                 .map(|cursor_position| {
-                    title_bar
-                        .is_over_pick_area(title_bar_layout, cursor_position)
+                    title_bar.is_over_pick_area(title_bar_layout, cursor_position)
                 })
                 .unwrap_or_default();
 
@@ -331,21 +331,16 @@ where
 
         self.body
             .as_widget()
-            .mouse_interaction(
-                &tree.children[0],
-                body_layout,
-                cursor,
-                viewport,
-                renderer,
-            )
+            .mouse_interaction(&tree.children[0], body_layout, cursor, viewport, renderer)
             .max(title_bar_interaction)
     }
 
     pub(crate) fn overlay<'b>(
         &'b mut self,
         tree: &'b mut Tree,
-        layout: Layout<'_>,
+        layout: Layout<'b>,
         renderer: &Renderer,
+        viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         if let Some(title_bar) = self.title_bar.as_mut() {
@@ -360,6 +355,7 @@ where
                 title_bar_state,
                 title_bar_layout,
                 renderer,
+                viewport,
                 translation,
             ) {
                 Some(overlay) => Some(overlay),
@@ -367,6 +363,7 @@ where
                     body_state,
                     children.next()?,
                     renderer,
+                    viewport,
                     translation,
                 ),
             }
@@ -375,23 +372,19 @@ where
                 &mut tree.children[0],
                 layout,
                 renderer,
+                viewport,
                 translation,
             )
         }
     }
 }
 
-impl<'a, Message, Theme, Renderer> Draggable
-    for &Content<'a, Message, Theme, Renderer>
+impl<'a, Message, Theme, Renderer> Draggable for &Content<'a, Message, Theme, Renderer>
 where
     Theme: container::Catalog,
     Renderer: core::Renderer,
 {
-    fn can_be_dragged_at(
-        &self,
-        layout: Layout<'_>,
-        cursor_position: Point,
-    ) -> bool {
+    fn can_be_dragged_at(&self, layout: Layout<'_>, cursor_position: Point) -> bool {
         if let Some(title_bar) = &self.title_bar {
             let mut children = layout.children();
             let title_bar_layout = children.next().unwrap();
@@ -403,8 +396,7 @@ where
     }
 }
 
-impl<'a, T, Message, Theme, Renderer> From<T>
-    for Content<'a, Message, Theme, Renderer>
+impl<'a, T, Message, Theme, Renderer> From<T> for Content<'a, Message, Theme, Renderer>
 where
     T: Into<Element<'a, Message, Theme, Renderer>>,
     Theme: container::Catalog + 'a,

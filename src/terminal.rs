@@ -6,25 +6,22 @@ use alacritty_terminal::{
     selection::{Selection, SelectionType},
     sync::FairMutex,
     term::{
-        cell::Flags,
-        color::Colors,
-        search::RegexSearch,
-        viewport_to_point, Config, TermDamage, TermMode,
+        cell::Flags, color::Colors, search::RegexSearch, viewport_to_point, Config, TermDamage,
+        TermMode,
     },
     tty::{self, Options},
     vte::ansi::{Color, CursorShape, NamedColor, Rgb},
     Term,
 };
 use cosmic::{
-    iced::advanced::graphics::text::font_system,
-    iced::mouse::ScrollDelta,
-    widget::{segmented_button},
+    iced::advanced::graphics::text::font_system, iced::mouse::ScrollDelta, widget::segmented_button,
 };
 use cosmic_text::{
     Attrs, AttrsList, Buffer, BufferLine, CacheKeyFlags, Family, LineEnding, Metrics, Shaping,
     Stretch, Weight, Wrap,
 };
 //use indexmap::IndexSet;
+use indexmap::IndexSet;
 use std::{
     borrow::Cow,
     io, mem,
@@ -35,7 +32,6 @@ use std::{
     time::Instant,
 };
 use tokio::sync::mpsc;
-use indexmap::IndexSet;
 
 pub use alacritty_terminal::grid::Scroll as TerminalScroll;
 
@@ -227,13 +223,13 @@ impl Terminal {
         let (cell_width, cell_height) = {
             let mut font_system = font_system().write().unwrap();
             let font_system = font_system.raw();
-            buffer.set_wrap(font_system, Wrap::None);
+            buffer.set_wrap(Wrap::None);
 
             // Use size of space to determine cell size
-            buffer.set_text(font_system, " ", default_attrs, Shaping::Advanced);
+            buffer.set_text(" ", &default_attrs, Shaping::Advanced, None);
             let layout = buffer.line_layout(font_system, 0).unwrap();
             let w = layout[0].w;
-            buffer.set_monospace_width(font_system, Some(w));
+            buffer.set_monospace_width(Some(w));
             (w, metrics.line_height)
         };
 
@@ -362,8 +358,7 @@ impl Terminal {
             self.term.lock().resize(self.size);
 
             self.with_buffer_mut(|buffer| {
-                let mut font_system = font_system().write().unwrap();
-                buffer.set_size(font_system.raw(), Some(width as f32), Some(height as f32));
+                buffer.set_size(Some(width as f32), Some(height as f32));
             });
 
             self.needs_update = true;
@@ -506,17 +501,17 @@ impl Terminal {
     }
 
     pub fn update_cell_size(&mut self) {
-        let default_attrs = self.default_attrs;
+        let default_attrs = self.default_attrs.clone();
         let (cell_width, cell_height) = {
             let mut font_system = font_system().write().unwrap();
             self.with_buffer_mut(|buffer| {
-                buffer.set_wrap(font_system.raw(), Wrap::None);
+                buffer.set_wrap(Wrap::None);
 
                 // Use size of space to determine cell size
-                buffer.set_text(font_system.raw(), " ", default_attrs, Shaping::Advanced);
+                buffer.set_text(" ", &default_attrs, Shaping::Advanced, None);
                 let layout = buffer.line_layout(font_system.raw(), 0).unwrap();
                 let w = layout[0].w;
-                buffer.set_monospace_width(font_system.raw(), Some(w));
+                buffer.set_monospace_width(Some(w));
                 (w, buffer.metrics().line_height)
             })
         };
@@ -553,7 +548,7 @@ impl Terminal {
             let mut line_i = 0;
             let mut last_point = None;
             let mut text = String::from(LRI);
-            let mut attrs_list = AttrsList::new(self.default_attrs);
+            let mut attrs_list = AttrsList::new(&self.default_attrs);
             {
                 let mut term = self.term.lock();
                 //TODO: use damage?
@@ -570,7 +565,7 @@ impl Terminal {
                             buffer.lines.push(BufferLine::new(
                                 "",
                                 LineEnding::default(),
-                                AttrsList::new(self.default_attrs),
+                                AttrsList::new(&self.default_attrs),
                                 Shaping::Advanced,
                             ));
                             buffer.set_redraw(true);
@@ -610,7 +605,7 @@ impl Terminal {
                     }
                     let end = text.len();
 
-                    let mut attrs = self.default_attrs;
+                    let mut attrs = self.default_attrs.clone();
 
                     let cell_fg = if indexed.cell.flags.contains(Flags::DIM) {
                         as_dim(indexed.cell.fg)
@@ -704,7 +699,7 @@ impl Terminal {
                         attrs = attrs.cache_key_flags(CacheKeyFlags::FAKE_ITALIC);
                     }
                     if attrs != attrs_list.defaults() {
-                        attrs_list.add_span(start..end, attrs);
+                        attrs_list.add_span(start..end, &attrs);
                     }
 
                     last_point = Some(indexed.point);
@@ -716,7 +711,7 @@ impl Terminal {
                 buffer.lines.push(BufferLine::new(
                     "",
                     LineEnding::default(),
-                    AttrsList::new(self.default_attrs),
+                    AttrsList::new(&self.default_attrs),
                     Shaping::Advanced,
                 ));
                 buffer.set_redraw(true);

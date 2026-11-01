@@ -67,10 +67,10 @@ impl From<&desktop::DesktopEntryData> for MimeApp {
             name: app.name.clone(),
             exec: app.exec.clone(),
             icon: match &app.icon {
-                desktop::IconSource::Name(name) => {
+                desktop::fde::IconSource::Name(name) => {
                     widget::icon::from_name(name.as_str()).size(32).handle()
                 }
-                desktop::IconSource::Path(path) => widget::icon::from_path(path.clone()),
+                desktop::fde::IconSource::Path(path) => widget::icon::from_path(path.clone()),
             },
             is_default: false,
         }
@@ -117,12 +117,9 @@ impl MimeAppCache {
         self.icons.clear();
         self.terminals.clear();
 
-        //TODO: get proper locale?
-        let locale = None;
-
         // Load desktop applications by supported mime types
         //TODO: hashmap for all apps by id?
-        let all_apps = desktop::load_applications(locale, false);
+        let all_apps: Vec<_> = desktop::load_applications(&[], false, None).collect();
         for app in all_apps.iter() {
             for mime in app.mime_types.iter() {
                 let apps = self

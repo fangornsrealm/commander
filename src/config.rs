@@ -10,8 +10,8 @@ use cosmic::{
 use hex_color::HexColor;
 use serde::{Deserialize, Serialize};
 
-use crate::{app::App, tab1::View as View1, tab2::View as View2};
 use crate::localize::LANGUAGE_SORTER;
+use crate::{app::App, tab1::View as View1};
 
 pub const CONFIG_VERSION: u64 = 1;
 pub const COSMIC_THEME_DARK: &str = "COSMIC Dark";
@@ -286,8 +286,8 @@ pub struct Config {
     pub show_embedded_terminal: bool,
     pub show_second_panel: bool,
     pub queue_file_operations: bool,
-    pub tab_left: TabConfig1,
-    pub tab_right: TabConfig2,
+    pub tab_left: TabConfig,
+    pub tab_right: TabConfig,
     pub paths_left: Vec<String>,
     pub paths_right: Vec<String>,
 }
@@ -361,7 +361,6 @@ impl Config {
         color_scheme_names.sort_by(|a, b| LANGUAGE_SORTER.compare(&a.0, &b.0));
         color_scheme_names
     }
-
 }
 
 impl Default for Config {
@@ -384,8 +383,8 @@ impl Default for Config {
             show_embedded_terminal: true,
             show_second_panel: true,
             queue_file_operations: true,
-            tab_left: TabConfig1::default(),
-            tab_right: TabConfig2::default(),
+            tab_left: TabConfig::default(),
+            tab_right: TabConfig::default(),
             paths_left: Vec::new(),
             paths_right: Vec::new(),
         }
@@ -422,12 +421,15 @@ impl DesktopConfig {
 
 /// Global and local [`crate::tab::Tab`] config.
 ///
-/// [`TabConfig1`] contains options that are passed to each instance of [`crate::tab::Tab`].
+/// [`TabConfig`] contains options that are passed to each instance of [`crate::tab::Tab`].
 /// These options are set globally through the main config, but each tab may change options
 /// locally. Local changes aren't saved to the main config.
+///
+/// Both panels share this single type; `TabConfig1`/`TabConfig2` are kept as aliases for
+/// compatibility with existing code.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, CosmicConfigEntry, Deserialize, Serialize)]
 #[serde(default)]
-pub struct TabConfig1 {
+pub struct TabConfig {
     pub view: View1,
     /// Show folders before files
     pub folders_first: bool,
@@ -437,7 +439,7 @@ pub struct TabConfig1 {
     pub icon_sizes: IconSizes,
 }
 
-impl Default for TabConfig1 {
+impl Default for TabConfig {
     fn default() -> Self {
         Self {
             view: View1::List,
@@ -448,33 +450,9 @@ impl Default for TabConfig1 {
     }
 }
 
-/// Global and local [`crate::tab::Tab`] config.
-///
-/// [`TabConfig2`] contains options that are passed to each instance of [`crate::tab::Tab`].
-/// These options are set globally through the main config, but each tab may change options
-/// locally. Local changes aren't saved to the main config.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, CosmicConfigEntry, Deserialize, Serialize)]
-#[serde(default)]
-pub struct TabConfig2 {
-    pub view: View2,
-    /// Show folders before files
-    pub folders_first: bool,
-    /// Show hidden files and folders
-    pub show_hidden: bool,
-    /// Icon zoom
-    pub icon_sizes: IconSizes,
-}
-
-impl Default for TabConfig2 {
-    fn default() -> Self {
-        Self {
-            view: View2::List,
-            folders_first: true,
-            show_hidden: false,
-            icon_sizes: IconSizes::default(),
-        }
-    }
-}
+/// Compatibility aliases: both panes share the same configuration type.
+pub type TabConfig1 = TabConfig;
+pub type TabConfig2 = TabConfig;
 
 macro_rules! percent {
     ($perc:expr, $pixel:ident) => {
@@ -509,5 +487,229 @@ impl IconSizes {
 
     pub fn grid(&self) -> u16 {
         percent!(self.grid, ICON_SIZE_GRID) as _
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    // ─── IconSizes ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn icon_sizes_defaults() {
+        let sizes = IconSizes::default();
+        assert_eq!(sizes.list.get(), 60);
+        assert_eq!(sizes.grid.get(), 240);
+    }
+
+    #[test]
+    fn icon_sizes_list_clamped_to_range() {
+        let sizes = IconSizes {
+            list: 200.try_into().unwrap(),
+            grid: 100.try_into().unwrap(),
+        };
+        // percent! clamps to 1..=ICON_SIZE_LIST * ICON_SCALE_MAX (32*5=160)
+        assert!(sizes.list() >= 1);
+        assert!(sizes.list() <= (ICON_SIZE_LIST * ICON_SCALE_MAX) as u16);
+    }
+
+    #[test]
+    fn icon_sizes_grid_clamped_to_range() {
+        let sizes = IconSizes {
+            list: 100.try_into().unwrap(),
+            grid: 500.try_into().unwrap(),
+        };
+        assert!(sizes.grid() >= 1);
+        assert!(sizes.grid() <= (ICON_SIZE_GRID * ICON_SCALE_MAX) as u16);
+    }
+
+    #[test]
+    fn icon_sizes_list_condensed_uses_condensed_base() {
+        let sizes = IconSizes {
+            list: 100.try_into().unwrap(),
+            grid: 100.try_into().unwrap(),
+        };
+        // 100% of ICON_SIZE_LIST_CONDENSED (48) = 48
+        assert_eq!(sizes.list_condensed(), 48);
+        // 100% of ICON_SIZE_LIST (32) = 32
+        assert_eq!(sizes.list(), 32);
+    }
+
+    // ─── AppTheme ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn app_theme_serde_roundtrip() {
+        let variants = [AppTheme::Dark, AppTheme::Light, AppTheme::System];
+        for theme in variants {
+            let json = serde_json::to_string(&theme).unwrap();
+            let deserialized: AppTheme = serde_json::from_str(&json).unwrap();
+            assert_eq!(theme, deserialized);
+        }
+    }
+
+    #[test]
+    fn app_theme_produces_valid_theme() {
+        for theme in [AppTheme::Dark, AppTheme::Light, AppTheme::System] {
+            let t = theme.theme();
+            // Just ensure it doesn't panic and returns a usable theme
+            let _ = t;
+        }
+    }
+
+    // ─── Favorite ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn favorite_home_roundtrip() {
+        let fav = Favorite::Home;
+        assert!(fav.path_opt().is_some());
+    }
+
+    #[test]
+    fn favorite_path_preserves_path() {
+        let path = PathBuf::from("/some/arbitrary/path");
+        let fav = Favorite::Path(path.clone());
+        assert_eq!(fav.path_opt(), Some(path));
+    }
+
+    #[test]
+    fn favorite_from_path_recognizes_home() {
+        let home = dirs::home_dir().unwrap();
+        let fav = Favorite::from_path(home.clone());
+        assert_eq!(fav, Favorite::Home);
+    }
+
+    #[test]
+    fn favorite_from_path_recognizes_documents() {
+        let docs = dirs::document_dir().unwrap();
+        let fav = Favorite::from_path(docs.clone());
+        assert_eq!(fav, Favorite::Documents);
+    }
+
+    #[test]
+    fn favorite_from_path_fallback_to_path_variant() {
+        let path = PathBuf::from("/nonexistent/unique/path");
+        let fav = Favorite::from_path(path.clone());
+        assert!(matches!(fav, Favorite::Path(ref p) if *p == path));
+    }
+
+    // ─── ColorSchemeAnsi ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn color_scheme_ansi_empty_by_default() {
+        let ansi = ColorSchemeAnsi::default();
+        assert!(ansi.is_empty());
+    }
+
+    #[test]
+    fn color_scheme_ansi_not_empty_when_set() {
+        let mut ansi = ColorSchemeAnsi::default();
+        ansi.black = Some(HexColor::from((255, 0, 0, 255)));
+        assert!(!ansi.is_empty());
+    }
+
+    #[test]
+    fn color_scheme_ansi_serde_roundtrip() {
+        let ansi = ColorSchemeAnsi::default();
+        let json = serde_json::to_string(&ansi).unwrap();
+        let deserialized: ColorSchemeAnsi = serde_json::from_str(&json).unwrap();
+        assert_eq!(ansi, deserialized);
+    }
+
+    // ─── Config defaults ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn config_defaults_sanity() {
+        let config = Config::default();
+        assert_eq!(config.app_theme, AppTheme::System);
+        assert!(config.show_button_row);
+        assert!(config.show_embedded_terminal);
+        assert!(config.show_second_panel);
+        assert!(config.queue_file_operations);
+        assert!(config.favorites.len() == 6);
+        assert!(config.paths_left.is_empty());
+        assert!(config.paths_right.is_empty());
+    }
+
+    #[test]
+    fn config_tab_configs_default() {
+        let config = Config::default();
+        assert_eq!(config.tab_left.view, View1::List);
+        assert!(config.tab_left.folders_first);
+        assert!(!config.tab_left.show_hidden);
+
+        assert_eq!(config.tab_right.view, View1::List);
+        assert!(config.tab_right.folders_first);
+        assert!(!config.tab_right.show_hidden);
+    }
+
+    // ─── DesktopConfig ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn desktop_config_defaults() {
+        let dc = DesktopConfig::default();
+        assert_eq!(dc.grid_spacing.get(), 100);
+        assert_eq!(dc.icon_size.get(), 100);
+        assert!(dc.show_content);
+        assert!(!dc.show_mounted_drives);
+        assert!(!dc.show_trash);
+    }
+
+    #[test]
+    fn desktop_config_grid_spacing_for() {
+        let dc = DesktopConfig::default();
+        // 100% of 100px = 100, clamped to max 100*5=500
+        let result = dc.grid_spacing_for(100);
+        assert!(result >= 1);
+        assert!(result <= 500);
+    }
+
+    // ─── ColorSchemeId / ProfileId ───────────────────────────────────────────────
+
+    #[test]
+    fn color_scheme_id_transparent_serde() {
+        let id = ColorSchemeId(42);
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, "42");
+        let deserialized: ColorSchemeId = serde_json::from_str("42").unwrap();
+        assert_eq!(id, deserialized);
+    }
+
+    #[test]
+    fn profile_id_transparent_serde() {
+        let id = ProfileId(99);
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, "99");
+    }
+
+    // ─── Config serde round-trip ─────────────────────────────────────────────────
+
+    #[test]
+    fn config_serde_roundtrip() {
+        let config = Config::default();
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(config.app_theme, deserialized.app_theme);
+        assert_eq!(config.favorites, deserialized.favorites);
+        assert_eq!(config.show_details, deserialized.show_details);
+        assert_eq!(config.show_button_row, deserialized.show_button_row);
+        assert_eq!(
+            config.show_embedded_terminal,
+            deserialized.show_embedded_terminal
+        );
+        assert_eq!(config.show_second_panel, deserialized.show_second_panel);
+        assert_eq!(
+            config.queue_file_operations,
+            deserialized.queue_file_operations
+        );
+    }
+
+    #[test]
+    fn config_deserialize_from_empty_json_uses_defaults() {
+        // `#[serde(default)]` on Config means an empty JSON object should work
+        let deserialized: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(deserialized.app_theme, AppTheme::System);
+        assert!(deserialized.favorites.len() == 6);
     }
 }

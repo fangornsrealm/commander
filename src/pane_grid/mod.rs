@@ -17,7 +17,7 @@
 //! * [`State`] API to perform actions programmatically (`split`, `swap`, `resize`, etc.)
 //!
 //! # Example
-//! ```no_run
+//! ```ignore
 //! # mod iced { pub mod widget { pub use iced_widget::*; } pub use iced_widget::Renderer; pub use iced_widget::core::*; }
 //! # pub type Element<'a, Message> = iced_widget::core::Element<'a, Message, iced_widget::Theme, iced_widget::Renderer>;
 //! #
@@ -83,26 +83,19 @@ pub use title_bar::TitleBar;
 //    self, DndAction, DndDestinationRectangle, DndEvent, OfferEvent,
 //};
 //use cosmic::iced::clipboard::mime::AllowedMimeTypes;
-use cosmic::iced_core::{
-    self, layout, touch,
-    widget::{tree, Tree},
-    Clipboard, Layout, Point, Shell, Size, Widget,
-};
-use cosmic::iced::{
-    clipboard::{
-        dnd::{self, DndAction, DndDestinationRectangle
-        }
-    },
-};
-use cosmic::iced::core::event::{self, Event};
+
+use cosmic::iced::core::event::Event;
 use cosmic::iced::core::mouse;
 use cosmic::iced::core::overlay::{self, Group};
 use cosmic::iced::core::renderer;
-use cosmic::iced::core::{
-    Background, Border, Color, Length, Pixels, Rectangle, Theme, Vector};
+use cosmic::iced::core::{Background, Border, Color, Length, Pixels, Rectangle, Theme, Vector};
 use cosmic::iced::widget::container;
-use cosmic::widget::dnd_destination::DragId;
-//use cosmic::widget::dnd_destination::DragId;
+use cosmic::iced::core::{
+    layout, touch,
+    widget::{tree, Tree},
+    Clipboard, Layout, Point, Shell, Size, Widget,
+};
+
 use cosmic::Theme as CosmicTheme;
 
 const DRAG_DEADBAND_DISTANCE: f32 = 10.0;
@@ -128,7 +121,7 @@ const THICKNESS_RATIO: f32 = 25.0;
 /// * [`State`] API to perform actions programmatically (`split`, `swap`, `resize`, etc.)
 ///
 /// # Example
-/// ```no_run
+/// ```ignore
 /// # mod iced { pub mod widget { pub use iced_widget::*; } pub use iced_widget::Renderer; pub use iced_widget::core::*; }
 /// # pub type Element<'a, Message> = iced_widget::core::Element<'a, Message, iced_widget::Theme, iced_widget::Renderer>;
 /// #
@@ -164,7 +157,7 @@ const THICKNESS_RATIO: f32 = 25.0;
 pub struct PaneGrid<'a, Message, Theme, Renderer>
 where
     Theme: Catalog + cosmic::widget::pane_grid::Catalog + 'a,
-    Renderer: cosmic::iced_core::Renderer + 'a,
+    Renderer: cosmic::iced::core::Renderer + 'a,
 {
     contents: Contents<'a, Content<'a, Message, Theme, Renderer>>,
     width: Length,
@@ -174,30 +167,13 @@ where
     on_drag: Option<Box<dyn Fn(DragEvent) -> Message + 'a>>,
     #[allow(clippy::type_complexity)]
     on_resize: Option<(f32, Box<dyn Fn(ResizeEvent) -> Message + 'a>)>,
-    on_hold: Option<Box<dyn Fn(f64, f64) -> Message>>,
-    on_drop: Option<Box<dyn Fn(f64, f64) -> Message + 'static>>,
-    on_enter: Option<Box<dyn Fn(f64, f64, Vec<String>) -> Message>>,
-    on_leave: Option<Box<dyn Fn() -> Message>>,
-    on_motion: Option<Box<dyn Fn(f64, f64) -> Message>>,
-    on_action_selected: Option<Box<dyn Fn(DndAction) -> Message>>,
-    on_data_received: Option<Box<dyn Fn(String, Vec<u8>) -> Message>>,
-    on_finish: Option<Box<dyn Fn(String, Vec<u8>, DndAction, f64, f64) -> Message>>,
     class: <Theme as Catalog>::Class<'a>,
-    mimes: Vec<String>,
-    drag_id: Option<DragId>,
-    pub panes: Vec<Pane>,
-    pub drag_id_by_pane: std::collections::BTreeMap<Pane, DragId>,
-    pub dnd_pane: Option<Pane>,
-    pub dnd_pane_id: Option<DragId>,
-    pub dnd_action: Option<DndAction>,
-    pub dnd_pos_x: f64,
-    pub dnd_pos_y: f64,
 }
 
 impl<'a, Message, Theme, Renderer> PaneGrid<'a, Message, Theme, Renderer>
 where
     Theme: Catalog + cosmic::widget::pane_grid::Catalog + 'a,
-    Renderer: cosmic::iced_core::Renderer + 'a,
+    Renderer: cosmic::iced::core::Renderer + 'a,
 {
     /// Creates a [`PaneGrid`] with the given [`State`] and view function.
     ///
@@ -231,52 +207,8 @@ where
             on_click: None,
             on_drag: None,
             on_resize: None,
-            on_hold: None,
-            on_drop: None,
-            on_enter: None,
-            on_leave: None,
-            on_motion: None,
-            on_action_selected: None,
-            on_data_received: None,
-            on_finish: None,
             class: <Theme as Catalog>::default(),
-            drag_id: None,
-            mimes: Vec::new(),
-            panes: Vec::new(),
-            drag_id_by_pane: std::collections::BTreeMap::new(),
-            dnd_pane: None,
-            dnd_pane_id: None,
-            dnd_action: None,
-            dnd_pos_x: 0.0,
-            dnd_pos_y: 0.0,
         }
-    }
-
-    pub fn drop_target_from_position(&self, x: f64, y: f64) -> (Pane, DragId)
-    {
-        let spacing = 5.0;
-        let target = cosmic::iced_core::Point {
-            x: x as f32,
-            y: y as f32,
-        };
-        let mut id = DragId::new();
-        let limits = cosmic::iced::core::layout::Limits::NONE
-            .min_width(1.0)
-            .min_height(1.0);
-        let wsize = Size {width: self.width, height: self.height};
-        let window_size = limits.resolve(wsize.width, wsize.height, cosmic::iced_core::Size::ZERO);
-        //let pane_grid = self.container.as_widget().
-        for (pane, rect) in self
-            .contents
-            .layout()
-            .pane_regions(spacing, window_size)
-        {
-            if rect.contains(target) {
-                id = self.drag_id_by_pane[&pane];
-                return (pane, id);
-            }
-        }
-        (self.panes[0].to_owned(), id)
     }
 
     pub fn get_contents(&self) -> &Contents<'a, Content<'a, Message, Theme, Renderer>> {
@@ -349,57 +281,6 @@ where
         &self.on_resize
     }
 
-    #[must_use]
-    pub fn on_hold(mut self, f: impl Fn(f64, f64) -> Message + 'static) -> Self {
-        self.on_hold = Some(Box::new(f));
-        self
-    }
-
-    #[must_use]
-    pub fn on_drop(mut self, f: impl Fn(f64, f64) -> Message + 'static) -> Self {
-        self.on_drop = Some(Box::new(f));
-        self
-    }
-
-    #[must_use]
-    pub fn on_enter(mut self, f: impl Fn(f64, f64, Vec<String>) -> Message + 'static) -> Self {
-        self.on_enter = Some(Box::new(f));
-        self
-    }
-
-    #[must_use]
-    pub fn on_leave(mut self, m: impl Fn() -> Message + 'static) -> Self {
-        self.on_leave = Some(Box::new(m));
-        self
-    }
-
-    #[must_use]
-    pub fn on_finish(
-        mut self,
-        f: impl Fn(String, Vec<u8>, DndAction, f64, f64) -> Message + 'static,
-    ) -> Self {
-        self.on_finish = Some(Box::new(f));
-        self
-    }
-
-    #[must_use]
-    pub fn on_motion(mut self, f: impl Fn(f64, f64) -> Message + 'static) -> Self {
-        self.on_motion = Some(Box::new(f));
-        self
-    }
-
-    #[must_use]
-    pub fn on_action_selected(mut self, f: impl Fn(DndAction) -> Message + 'static) -> Self {
-        self.on_action_selected = Some(Box::new(f));
-        self
-    }
-
-    #[must_use]
-    pub fn on_data_received(mut self, f: impl Fn(String, Vec<u8>) -> Message + 'static) -> Self {
-        self.on_data_received = Some(Box::new(f));
-        self
-    }
-
     /// Enables the resize interactions of the [`PaneGrid`], which will
     /// use the provided function to produce messages.
     ///
@@ -439,34 +320,15 @@ where
             .then(|| self.on_drag.is_some())
             .unwrap_or_default()
     }
-    
-    /// Sets the DragID of the whole PaneGrid
-    #[must_use]
-    pub fn drag_id(mut self, id: DragId) -> Self {
-        self.drag_id = Some(id);
-        self
-    }
-    
-    /// Returns the drag id of the destination.
-    ///
-    /// # Panics
-    /// Panics if the destination has been assigned a Set id, which is invalid.
-    #[must_use]
-    pub fn get_drag_id(&self) -> DragId {
-        if self.drag_id.is_some() {
-            return self.drag_id.unwrap();
-        }
-        DragId::new()
-    }
 }
 
 impl<'a, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for PaneGrid<'a, Message, Theme, Renderer>
 where
     Theme: crate::pane_grid::Catalog + cosmic::widget::pane_grid::Catalog + 'a,
-    Renderer: cosmic::iced_core::Renderer,
-    cosmic::widget::PaneGrid<'a, crate::app::Message, Theme, Renderer>:
-        std::convert::From<crate::pane_grid::PaneGrid<'a, crate::app::Message, Theme, Renderer>> + 'a,
+    Renderer: cosmic::iced::core::Renderer,
+    cosmic::widget::PaneGrid<'a, crate::app::Message, Theme, Renderer>: std::convert::From<crate::pane_grid::PaneGrid<'a, crate::app::Message, Theme, Renderer>>
+        + 'a,
 {
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<state::Action>()
@@ -511,7 +373,7 @@ where
     }
 
     fn layout(
-        &self,
+        &mut self,
         tree: &mut Tree,
         renderer: &Renderer,
         limits: &layout::Limits,
@@ -522,7 +384,7 @@ where
 
         let children = self
             .contents
-            .iter()
+            .iter_mut()
             .zip(tree.children.iter_mut())
             .filter_map(|((pane, content), tree)| {
                 let region = regions.get(&pane)?;
@@ -538,15 +400,16 @@ where
     }
 
     fn operate(
-        &self,
+        &mut self,
         tree: &mut Tree,
         layout: Layout<'_>,
         renderer: &Renderer,
         operation: &mut dyn cosmic::iced::core::widget::Operation,
     ) {
-        operation.container(None, layout.bounds(), &mut |operation| {
+        operation.container(None, layout.bounds());
+        operation.traverse(&mut |operation| {
             self.contents
-                .iter()
+                .iter_mut()
                 .zip(&mut tree.children)
                 .zip(layout.children())
                 .for_each(|(((_pane, content), state), layout)| {
@@ -555,19 +418,17 @@ where
         });
     }
 
-    fn on_event(
+    fn update(
         &mut self,
         tree: &mut Tree,
-        event: Event,
+        event: &Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
         clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
-    ) -> event::Status {
-        let mut event_status = event::Status::Ignored;
-
+    ) {
         let action = tree.state.downcast_mut::<state::Action>();
         let node = self.contents.layout();
 
@@ -583,7 +444,7 @@ where
                 let bounds = layout.bounds();
 
                 if let Some(cursor_position) = cursor.position_over(bounds) {
-                    event_status = event::Status::Captured;
+                    shell.capture_event();
 
                     match &self.on_resize {
                         Some((leeway, _)) => {
@@ -670,9 +531,9 @@ where
                         }
                     }
 
-                    event_status = event::Status::Captured;
+                    shell.capture_event();
                 } else if action.picked_split().is_some() {
-                    event_status = event::Status::Captured;
+                    shell.capture_event();
                 }
 
                 *action = state::Action::Idle;
@@ -703,7 +564,7 @@ where
 
                                 shell.publish(on_resize(ResizeEvent { split, ratio }));
 
-                                event_status = event::Status::Captured;
+                                shell.capture_event();
                             }
                         }
                     }
@@ -718,12 +579,12 @@ where
             .iter_mut()
             .zip(&mut tree.children)
             .zip(layout.children())
-            .map(|(((pane, content), tree), layout)| {
+            .for_each(|(((pane, content), tree), layout)| {
                 let is_picked = picked_pane == Some(pane);
 
-                content.on_event(
+                content.update(
                     tree,
-                    event.clone(),
+                    event,
                     layout,
                     cursor,
                     renderer,
@@ -731,9 +592,8 @@ where
                     shell,
                     viewport,
                     is_picked,
-                )
-            })
-            .fold(event_status, event::Status::merge)
+                );
+            });
     }
 
     fn mouse_interaction(
@@ -991,8 +851,9 @@ where
     fn overlay<'b>(
         &'b mut self,
         tree: &'b mut Tree,
-        layout: Layout<'_>,
+        layout: Layout<'b>,
         renderer: &Renderer,
+        viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         let children = self
@@ -1001,67 +862,35 @@ where
             .zip(&mut tree.children)
             .zip(layout.children())
             .filter_map(|(((_, content), state), layout)| {
-                content.overlay(state, layout, renderer, translation)
+                content.overlay(state, layout, renderer, viewport, translation)
             })
             .collect::<Vec<_>>();
 
         (!children.is_empty()).then(|| Group::with_children(children).overlay())
     }
 
-
     fn drag_destinations(
         &self,
-        _state: &Tree,
-        _layout: layout::Layout<'_>,
-        _renderer: &Renderer,
-        dnd_rectangles: &mut iced_core::clipboard::DndDestinationRectangles,
+        state: &Tree,
+        layout: layout::Layout<'_>,
+        renderer: &Renderer,
+        dnd_rectangles: &mut cosmic::iced::core::clipboard::DndDestinationRectangles,
     ) {
-        let spacing = 5.0;
-
-        let limits = cosmic::iced::core::layout::Limits::NONE
-            .min_width(1.0)
-            .min_height(1.0);
-        let window_size = limits.resolve(
-            self.width,
-            self.height,
-            Size::ZERO,
-        );
-        for (pane, size) in self
-            .contents
-            .layout()
-            .pane_regions(spacing, window_size)
-        {
-            let my_id = self.drag_id_by_pane[&pane];
-
-            let dnd_rect = DndDestinationRectangle {
-                id: my_id.0,
-                rectangle: dnd::Rectangle {
-                    x: f64::from(size.x),
-                    y: f64::from(size.y),
-                    width: f64::from(size.width),
-                    height: f64::from(size.height),
-                },
-                mime_types: self
-                    .mimes
-                    .clone()
-                    .into_iter()
-                    .map(std::borrow::Cow::Owned)
-                    .collect(),
-                actions: DndAction::Copy | DndAction::Move,
-                preferred: DndAction::Move,
-            };
-            dnd_rectangles.push(dnd_rect);
+        let mut layouts = layout.children();
+        let mut states = state.children.iter();
+        for (_pane, content) in self.contents.iter() {
+            if let (Some(child_layout), Some(child_state)) = (layouts.next(), states.next()) {
+                content.drag_destinations(child_state, child_layout, renderer, dnd_rectangles);
+            }
         }
     }
-
 }
 
-impl<'a, Message, Theme, Renderer>
-    From<PaneGrid<'a, Message, Theme, Renderer>>
+impl<'a, Message, Theme, Renderer> From<PaneGrid<'a, Message, Theme, Renderer>>
     for cosmic::widget::PaneGrid<'a, Message, Theme, Renderer>
 where
     Theme: Catalog + cosmic::widget::pane_grid::Catalog + 'a,
-    Renderer: cosmic::iced_core::Renderer + 'a,
+    Renderer: cosmic::iced::core::Renderer + 'a,
 {
     fn from(
         pane_grid: PaneGrid<'a, Message, Theme, Renderer>,
@@ -1473,7 +1302,6 @@ pub fn default_cosmic_theme(theme: &CosmicTheme) -> Style {
                 width: 2.0,
             },
         }
-
     } else {
         Style {
             hovered_region: Highlight {

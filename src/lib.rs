@@ -1,8 +1,9 @@
 // Copyright 2023 System76 <info@system76.com>
 // SPDX-License-Identifier: GPL-3.0-only
- 
+
+use clap::Parser;
 use cosmic::{app::Settings, iced::Limits};
-use std::{env, fs, path::PathBuf, process};
+use std::{fs, path::PathBuf, process};
 
 use app::{App, Flags};
 pub mod app;
@@ -22,13 +23,15 @@ mod mouse_area;
 mod mouse_reporter;
 pub mod operation;
 mod pane_grid;
+mod recipe;
 mod spawn_detached;
 use tab1::Location;
+mod tab;
 pub mod tab1;
 pub mod tab2;
+mod terminal;
 mod terminal_box;
 mod terminal_theme;
-mod terminal;
 mod thumbnailer;
 //pub mod terminal;
 
@@ -56,6 +59,49 @@ pub fn home_dir() -> PathBuf {
             path
         }
     }
+}
+
+pub fn sum_files_in_dir(path: &PathBuf) -> (u64, u64) {
+    let mut num = 0;
+    let mut size = 0;
+    match std::fs::read_dir(path) {
+        Ok(entries) => {
+            for entry_res in entries {
+                let entry = match entry_res {
+                    Ok(ok) => ok,
+                    Err(err) => {
+                        log::warn!("failed to read entry in {:?}: {}", path, err);
+                        continue;
+                    }
+                };
+                if let Ok(metadata) = entry.metadata() {
+                    if metadata.is_file() {
+                        num += 1;
+                        size += metadata.len();
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            log::error!("Failed to read contents of directory! {}", error);
+            return (0, 0);
+        }
+    }
+    (num, size)
+}
+
+pub fn sum_selected_files_in_dir(paths: Vec<PathBuf>) -> (u64, u64) {
+    let mut num = 0;
+    let mut size = 0;
+    for path in paths {
+        if let Ok(metadata) = path.metadata() {
+            if metadata.is_file() {
+                num += 1;
+                size += metadata.len();
+            }
+        }
+    }
+    (num, size)
 }
 
 /// Runs application in desktop mode
@@ -93,42 +139,55 @@ pub fn desktop() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Runs application with these settings
 #[rustfmt::skip]
+/// Command-line interface parsed by `clap`.
+#[derive(clap::Parser)]
+#[command(name = "commander", about = "Dual panel file manager for COSMIC")]
+struct Cli {
+    /// Paths to open (directories or files)
+    #[arg(trailing_var_arg = true)]
+    paths: Vec<String>,
+
+    /// Open the trash folder
+    #[arg(long)]
+    trash: bool,
+
+    /// Run in the foreground (do not daemonize)
+    #[arg(long)]
+    no_daemon: bool,
+}
+
+/// Runs application with these settings
+#[rustfmt::skip]
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
     localize::localize();
 
+    let cli = Cli::parse();
+    let daemonize = !cli.no_daemon;
+
     let (config_handler, config) = Config::load();
 
-    let mut daemonize = false;
     let mut locations = Vec::new();
-    for arg in env::args().skip(1) {
-        let location = if &arg == "--no-daemon" {
-            daemonize = false;
-            continue;
-        } else if &arg == "--trash" {
-            Location::Trash
-        } else {
-            //TODO: support more URLs
-            let path = match url::Url::parse(&arg) {
-                Ok(url) => match url.to_file_path() {
-                    Ok(path) => path,
-                    Err(()) => {
-                        log::warn!("invalid argument {:?}", arg);
-                        continue;
-                    }
-                },
-                Err(_) => PathBuf::from(arg),
-            };
-            match fs::canonicalize(&path) {
-                Ok(absolute) => Location::Path(absolute),
-                Err(err) => {
-                    log::warn!("failed to canonicalize {:?}: {}", path, err);
+    if cli.trash {
+        locations.push(Location::Trash);
+    }
+    for arg in &cli.paths {
+        //TODO: support more URLs
+        let path = match url::Url::parse(arg) {
+            Ok(url) => match url.to_file_path() {
+                Ok(path) => path,
+                Err(()) => {
+                    log::warn!("invalid argument {arg:?}");
                     continue;
                 }
-            }
+            },
+            Err(_) => PathBuf::from(arg),
         };
-        locations.push(location);
+        match fs::canonicalize(&path) {
+            Ok(absolute) => locations.push(Location::Path(absolute)),
+            Err(err) => log::warn!("failed to canonicalize {path:?}: {err}"),
+        }
     }
 
     if daemonize {
@@ -137,7 +196,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(fork::Fork::Child) => (),
             Ok(fork::Fork::Parent(_child_pid)) => process::exit(0),
             Err(err) => {
-                eprintln!("failed to daemonize: {:?}", err);
+                eprintln!("failed to daemonize: {err:?}");
                 process::exit(1);
             }
         }

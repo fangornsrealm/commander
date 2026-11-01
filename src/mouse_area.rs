@@ -3,9 +3,9 @@
 use std::time::Instant;
 
 use cosmic::{
-    iced_core::{
+    iced::core::{
         border::Border,
-        event::{self, Event},
+        event::Event,
         keyboard::{
             self,
             key::{self, Key},
@@ -321,60 +321,58 @@ where
     }
 
     fn layout(
-        &self,
+        &mut self,
         tree: &mut Tree,
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
         self.content
-            .as_widget()
+            .as_widget_mut()
             .layout(&mut tree.children[0], renderer, limits)
     }
 
     fn operate(
-        &self,
+        &mut self,
         tree: &mut Tree,
         layout: Layout<'_>,
         renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
         self.content
-            .as_widget()
+            .as_widget_mut()
             .operate(&mut tree.children[0], layout, renderer, operation);
     }
 
-    fn on_event(
+    fn update(
         &mut self,
         tree: &mut Tree,
-        event: Event,
+        event: &Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
         clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
-    ) -> event::Status {
-        match event {
-            Event::Mouse(_mouseevent) => {
-                if let event::Status::Captured = self.content.as_widget_mut().on_event(
-                    &mut tree.children[0],
-                    event.clone(),
-                    layout,
-                    cursor,
-                    renderer,
-                    clipboard,
-                    shell,
-                    viewport,
-                ) {
-                    return event::Status::Captured;
-                }
-
-            },
-            _ => return event::Status::Ignored,
+    ) {
+        if !matches!(event, Event::Mouse(_)) {
+            return;
+        }
+        self.content.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+        if shell.is_event_captured() {
+            return;
         }
         update(
             self,
-            &event,
+            event,
             layout,
             cursor,
             shell,
@@ -445,13 +443,14 @@ where
     fn overlay<'b>(
         &'b mut self,
         tree: &'b mut Tree,
-        layout: Layout<'_>,
+        layout: Layout<'b>,
         renderer: &Renderer,
+        viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         self.content
             .as_widget_mut()
-            .overlay(&mut tree.children[0], layout, renderer, translation)
+            .overlay(&mut tree.children[0], layout, renderer, viewport, translation)
     }
 
     fn drag_destinations(
@@ -459,7 +458,7 @@ where
         state: &Tree,
         layout: Layout<'_>,
         renderer: &Renderer,
-        dnd_rectangles: &mut cosmic::iced_core::clipboard::DndDestinationRectangles,
+        dnd_rectangles: &mut cosmic::iced::core::clipboard::DndDestinationRectangles,
     ) {
         self.content.as_widget().drag_destinations(
             &state.children[0],
@@ -498,7 +497,7 @@ fn update<Message: Clone>(
     cursor: mouse::Cursor,
     shell: &mut Shell<'_, Message>,
     state: &mut State,
-) -> event::Status {
+) {
     let layout_bounds = layout.bounds();
 
     if let Some(message) = widget.on_resize.as_ref() {
@@ -528,7 +527,7 @@ fn update<Message: Clone>(
     }
 
     if state.drag_initiated.is_none() && !cursor.is_over(layout_bounds) {
-        return event::Status::Ignored;
+        return;
     }
 
     if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
@@ -558,7 +557,8 @@ fn update<Message: Clone>(
         }
 
         if widget.on_press.is_some() {
-            return event::Status::Captured;
+            shell.capture_event();
+            return;
         }
     }
 
@@ -592,13 +592,14 @@ fn update<Message: Clone>(
     {
         if !recent_click {
             state.prev_click = None;
-            return event::Status::Ignored;
+            return;
         }
         state.drag_initiated = None;
         if let Some(message) = widget.on_release.as_ref() {
             shell.publish(message(cursor.position_in(layout_bounds)));
 
-            return event::Status::Captured;
+            shell.capture_event();
+            return;
         }
     }
 
@@ -606,7 +607,8 @@ fn update<Message: Clone>(
         if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) = event {
             shell.publish(message(cursor.position_in(layout_bounds)));
 
-            return event::Status::Captured;
+            shell.capture_event();
+            return;
         }
     }
 
@@ -614,7 +616,7 @@ fn update<Message: Clone>(
         if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) = event {
             shell.publish(message(cursor.position_in(layout_bounds)));
 
-            return event::Status::Ignored;
+            return;
         }
     }
 
@@ -622,7 +624,8 @@ fn update<Message: Clone>(
         if let Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Right)) = event {
             shell.publish(message(cursor.position_in(layout_bounds)));
 
-            return event::Status::Captured;
+            shell.capture_event();
+            return;
         }
     }
 
@@ -630,7 +633,8 @@ fn update<Message: Clone>(
         if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle)) = event {
             shell.publish(message(cursor.position_in(layout_bounds)));
 
-            return event::Status::Captured;
+            shell.capture_event();
+            return;
         }
     }
 
@@ -638,7 +642,8 @@ fn update<Message: Clone>(
         if let Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Middle)) = event {
             shell.publish(message(cursor.position_in(layout_bounds)));
 
-            return event::Status::Captured;
+            shell.capture_event();
+            return;
         }
     }
 
@@ -646,7 +651,8 @@ fn update<Message: Clone>(
         if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Back)) = event {
             shell.publish(message(cursor.position_in(layout_bounds)));
 
-            return event::Status::Captured;
+            shell.capture_event();
+            return;
         }
     }
 
@@ -654,7 +660,8 @@ fn update<Message: Clone>(
         if let Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Back)) = event {
             shell.publish(message(cursor.position_in(layout_bounds)));
 
-            return event::Status::Captured;
+            shell.capture_event();
+            return;
         }
     }
 
@@ -662,7 +669,8 @@ fn update<Message: Clone>(
         if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Forward)) = event {
             shell.publish(message(cursor.position_in(layout_bounds)));
 
-            return event::Status::Captured;
+            shell.capture_event();
+            return;
         }
     }
 
@@ -670,7 +678,8 @@ fn update<Message: Clone>(
         if let Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Forward)) = event {
             shell.publish(message(cursor.position_in(layout_bounds)));
 
-            return event::Status::Captured;
+            shell.capture_event();
+            return;
         }
     }
 
@@ -678,7 +687,8 @@ fn update<Message: Clone>(
         if let Event::Mouse(mouse::Event::WheelScrolled { delta }) = event {
             if let Some(message) = on_scroll(*delta, state.modifiers) {
                 shell.publish(message);
-                return event::Status::Captured;
+                shell.capture_event();
+            return;
             }
         }
     }
@@ -696,8 +706,6 @@ fn update<Message: Clone>(
             },
         )));
     }
-
-    event::Status::Ignored
 }
 
 fn handle_key_event(key_event: &keyboard::Event, state: &mut State) {

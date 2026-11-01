@@ -2,13 +2,13 @@
 name = "commander"
 version = "0.1.0"
 authors = ["Alexander Schwarzkopf <progs@fangornsrealm.eu>"]
-edition = "2021"
+edition = "2024"
 description = "Dual panel file manager for COSMIC DE"
 readme = "README.md"
 license = "GPL-3.0"
 homepage = "https://github.com/fangornsrealm/commander"
 repository = "https://github.com/fangornsrealm/commander.git"
-rust-version = "1.80"
+rust-version = "1.93"
 
 [build-dependencies]
 vergen = { version = "8", features = ["git", "gitcl"] }
@@ -16,6 +16,7 @@ vergen = { version = "8", features = ["git", "gitcl"] }
 [dependencies]
 alacritty_terminal = { git = "https://github.com/alacritty/alacritty", rev = "cacdb5bb3b72bad2c729227537979d95af75978f" }
 chrono = { version = "0.4", features = ["unstable-locales"] }
+clap = { version = "4", features = ["derive"] }
 cosmic-mime-apps = { git = "https://github.com/pop-os/cosmic-mime-apps.git", optional = true }
 dirs = "6.0.0"
 env_logger = "0.11"
@@ -36,13 +37,13 @@ mime_guess = "2"
 notify-debouncer-full = "0.3"
 notify-rust = { version = "4", optional = true }
 num_cpus = "1.17.0"
-once_cell = "1.19"
 open = "5.0.2"
 palette = { version = "0.7", features = ["serde"] }
 paste = "1.0"
 regex = "1"
 rustc-hash = "2.1.1"
 serde = { version = "1", features = ["serde_derive"] }
+serde_json = "1"
 shlex = { version = "1.3" }
 tempfile = "3"
 tikv-jemallocator = { version = "0.6", optional = true }
@@ -54,35 +55,38 @@ wayland-client = { version = "0.31", optional = true }
 xdg = { version = "2.5.2", optional = true }
 xdg-mime = "0.4.0"
 # Compression
-bzip2 = { version = "0.5.1", optional = true } #TODO: replace with pure Rust crate
-flate2 = "1.0"
-liblzma = { version = "0.3.6", optional = true } #TODO: replace with pure Rust crate
-tar = "0.4.44"
+bzip2-rs = { version = "0.1", optional = true }
+flate2 = "1.1"
+lzma-rs = { version = "0.3", optional = true }
+tar = "0.4"
 # Internationalization
-i18n-embed = { version = "0.15.3", features = [
+i18n-embed = { version = "0.16.0", features = [
     "fluent-system",
     "desktop-requester",
 ] }
-i18n-embed-fl = "0.9"
+i18n-embed-fl = "0.10"
 rust-embed = "8"
 slotmap = "1.0.7"
-recently-used-xbel = "1.1.0"
-zip = "2.1.6"
+recently-used-xbel = "1.2.0"
+zip = "2.1"
 unix_permissions_ext = "0.1.2"
-uzers = "0.12.0"
+uzers = "0.12"
 
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic.git"
+rev = "95236a944bfd51c63a2fc65fe50a592c47168d40"
 default-features = false
 #TODO: a11y feature crashes
 features = ["multi-window", "tokio", "winit", "wgpu"]
 
 [dependencies.cosmic-text]
-git = "https://github.com/pop-os/cosmic-text.git"
+version = "0.19"
 features = ["monospace_fallback", "shape-run-cache"]
 
 [features]
 default = ["bzip2", "desktop", "gvfs", "liblzma", "notify", "wgpu"]
+bzip2 = ["dep:bzip2-rs"]
+liblzma = ["dep:lzma-rs"]
 desktop = ["libcosmic/desktop", "dep:cosmic-mime-apps", "dep:xdg"]
 gvfs = ["dep:gio", "dep:glib"]
 jemalloc = ["dep:tikv-jemallocator"]
@@ -98,29 +102,18 @@ inherits = "release"
 debug = true
 
 [target.'cfg(unix)'.dependencies]
-fork = "0.2.0"
+fork = "0.8.0"
 
 [dev-dependencies]
 # cap-std = "3"
 # cap-tempfile = "3"
 fastrand = "2"
-test-log = "0.2.17"
+test-log = "0.2"
 tokio = { version = "1", features = ["rt", "macros"] }
 
 [patch.crates-io]
 # https://github.com/alexcrichton/filetime/pull/104
 filetime = { git = "https://github.com/jackpot51/filetime" }
-
-# [patch.'https://github.com/pop-os/cosmic-text']
-# cosmic-text = { path = "../cosmic-text" }
-
-# [patch.'https://github.com/pop-os/libcosmic']
-# libcosmic = { path = "../libcosmic" }
-# cosmic-config = { path = "../libcosmic/cosmic-config" }
-# cosmic-theme = { path = "../libcosmic/cosmic-theme" }
-
-# [patch.'https://github.com/pop-os/smithay-clipboard']
-# smithay-clipboard = { path = "../smithay-clipboard" }
 
 [package.metadata.deb]
 license-file = "LICENSE"
@@ -146,10 +139,7 @@ assets = [
         "644",
     ],
 ]
-depends = [
-    "libc6", 
-    "libxkbcommon0", 
-    ]
+depends = ["libc6", "libxkbcommon0"]
 
 [package.metadata.generate-rpm]
 assets = [

@@ -1,5 +1,5 @@
-use cosmic::iced::core::{Rectangle, Size};
 use crate::pane_grid::{Axis, Pane, Split};
+use cosmic::iced::core::{Rectangle, Size};
 
 use std::collections::BTreeMap;
 
@@ -50,11 +50,7 @@ impl Node {
 
     /// Returns the rectangular region for each [`Pane`] in the [`Node`] given
     /// the spacing between panes and the total available space.
-    pub fn pane_regions(
-        &self,
-        spacing: f32,
-        size: Size,
-    ) -> BTreeMap<Pane, Rectangle> {
+    pub fn pane_regions(&self, spacing: f32, size: Size) -> BTreeMap<Pane, Rectangle> {
         let mut regions = BTreeMap::new();
 
         self.compute_regions(
@@ -97,9 +93,7 @@ impl Node {
 
     pub(crate) fn find(&mut self, pane: Pane) -> Option<&mut Node> {
         match self {
-            Node::Split { a, b, .. } => {
-                a.find(pane).or_else(move || b.find(pane))
-            }
+            Node::Split { a, b, .. } => a.find(pane).or_else(move || b.find(pane)),
             Node::Pane(p) => {
                 if *p == pane {
                     Some(self)

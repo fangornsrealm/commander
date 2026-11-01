@@ -135,7 +135,7 @@ fn zip_extract<R: io::Read + io::Seek, P: AsRef<Path>>(
         .map_err(|e| e)?;
         let filepath = file
             .enclosed_name()
-            .ok_or(ZipError::InvalidArchive("Invalid file path"))?;
+            .ok_or(ZipError::InvalidArchive("Invalid file path".into()))?;
 
         let outpath = directory.as_ref().join(filepath);
 
@@ -942,25 +942,31 @@ impl Operation {
                                         })?,
                                     #[cfg(feature = "bzip2")]
                                     "application/x-bzip" | "application/x-bzip-compressed-tar" => {
+                                        // Pure-Rust bzip2 decoder (`bzip2-rs`): no C/libbz2 dependency.
                                         OpReader::new(path, controller)
                                             .map(io::BufReader::new)
-                                            .map(bzip2::read::BzDecoder::new)
+                                            .map(bzip2_rs::DecoderReader::new)
                                             .map(tar::Archive::new)
                                             .and_then(|mut archive| archive.unpack(&new_dir))
                                             .map_err(OperationError::from_str)?
                                     }
                                     #[cfg(feature = "liblzma")]
                                     "application/x-xz" | "application/x-xz-compressed-tar" => {
-                                        OpReader::new(path, controller)
-                                            .map(io::BufReader::new)
-                                            .map(liblzma::read::XzDecoder::new)
-                                            .map(tar::Archive::new)
-                                            .and_then(|mut archive| archive.unpack(&new_dir))
+                                        // Pure-Rust xz decoder (`lzma-rs`). `xz_decompress` is a
+                                        // BufRead→Write codec, so decompress into memory and unpack.
+                                        let mut reader = io::BufReader::new(
+                                            OpReader::new(path, controller)
+                                                .map_err(OperationError::from_str)?,
+                                        );
+                                        let mut decompressed = Vec::new();
+                                        lzma_rs::xz_decompress(&mut reader, &mut decompressed)
+                                            .map_err(OperationError::from_str)?;
+                                        tar::Archive::new(io::Cursor::new(decompressed))
+                                            .unpack(&new_dir)
                                             .map_err(OperationError::from_str)?
                                     }
                                     _ => Err(OperationError::from_str(format!(
-                                        "unsupported mime type {:?}",
-                                        mime
+                                        "unsupported mime type {mime:?}"
                                     )))?,
                                 }
                             }
@@ -1087,7 +1093,10 @@ mod tests {
     use test_log::test;
     use tokio::sync;
 
-    use super::{Controller, Operation, OperationError, OperationSelection, ReplaceResult};
+    use super::{
+        copy_unique_path, get_directory_name, Controller, Operation, OperationError,
+        OperationSelection, ReplaceResult,
+    };
     use crate::{
         app::{
             test_utils::{
@@ -1301,5 +1310,94 @@ mod tests {
         assert!(expected.exists(), "File should have been copied");
 
         Ok(())
+    }
+
+    // ─── copy_unique_path ───────────────────────────────────────────────────────
+
+    #[test]
+    fn copy_unique_path_no_collision() {
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("foo.txt");
+        let to = tmp.path();
+        let result = copy_unique_path(&from, to);
+        assert_eq!(result, to.join("foo.txt"));
+    }
+
+    #[test]
+    fn copy_unique_path_with_collision_appends_copy_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("foo.txt");
+        File::create(&from).unwrap();
+        let result = copy_unique_path(&from, tmp.path());
+        assert_eq!(
+            result,
+            tmp.path().join(format!("foo ({} 1).txt", fl!("copy_noun")))
+        );
+    }
+
+    #[test]
+    fn copy_unique_path_collision_increments_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("foo.txt");
+        File::create(&from).unwrap();
+        File::create(tmp.path().join(format!("foo ({} 1).txt", fl!("copy_noun")))).unwrap();
+        let result = copy_unique_path(&from, tmp.path());
+        assert_eq!(
+            result,
+            tmp.path().join(format!("foo ({} 2).txt", fl!("copy_noun")))
+        );
+    }
+
+    #[test]
+    fn copy_unique_path_compound_extension_tar_gz() {
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("archive.tar.gz");
+        File::create(&from).unwrap();
+        let result = copy_unique_path(&from, tmp.path());
+        // Should split on the compound extension, not just ".gz"
+        assert_eq!(
+            result,
+            tmp.path()
+                .join(format!("archive ({} 1).tar.gz", fl!("copy_noun")))
+        );
+    }
+
+    #[test]
+    fn copy_unique_path_directory_has_no_extension_split() {
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("my dir");
+        fs::create_dir(&from).unwrap();
+        let result = copy_unique_path(&from, tmp.path());
+        assert_eq!(
+            result,
+            tmp.path().join(format!("my dir ({} 1)", fl!("copy_noun")))
+        );
+    }
+
+    // ─── get_directory_name ─────────────────────────────────────────────────────
+
+    #[test]
+    fn get_directory_name_recognizes_compound_extensions() {
+        assert_eq!(get_directory_name("archive.tar.bz2"), "archive");
+        assert_eq!(get_directory_name("archive.tar.gz"), "archive");
+        assert_eq!(get_directory_name("archive.tar.lzma"), "archive");
+        assert_eq!(get_directory_name("archive.tar.xz"), "archive");
+        assert_eq!(get_directory_name("archive.tgz"), "archive");
+        assert_eq!(get_directory_name("archive.tar"), "archive");
+        assert_eq!(get_directory_name("archive.zip"), "archive");
+    }
+
+    #[test]
+    fn get_directory_name_preserves_unsupported_extensions() {
+        assert_eq!(get_directory_name("archive.zst"), "archive.zst");
+        assert_eq!(get_directory_name("notes.txt"), "notes.txt");
+        assert_eq!(get_directory_name("README"), "README");
+    }
+
+    #[test]
+    fn get_directory_name_does_not_strip_non_suffix_extensions() {
+        // ".tar" must be a true suffix, not a substring
+        assert_eq!(get_directory_name("star"), "star"); // does not end with ".tar"
+        assert_eq!(get_directory_name("tar.gz.bak"), "tar.gz.bak"); // .bak not in list
     }
 }

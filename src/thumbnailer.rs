@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use mime_guess::Mime;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use std::{collections::HashMap, fs, path::Path, process, sync::Mutex, time::Instant};
 
 #[derive(Clone, Debug)]
@@ -148,8 +148,8 @@ impl ThumbnailerCache {
     }
 }
 
-static THUMBNAILER_CACHE: Lazy<Mutex<ThumbnailerCache>> =
-    Lazy::new(|| Mutex::new(ThumbnailerCache::new()));
+static THUMBNAILER_CACHE: LazyLock<Mutex<ThumbnailerCache>> =
+    LazyLock::new(|| Mutex::new(ThumbnailerCache::new()));
 
 pub fn thumbnailer(mime: &Mime) -> Vec<Thumbnailer> {
     let thumbnailer_cache = THUMBNAILER_CACHE.lock().unwrap();

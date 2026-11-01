@@ -1,15 +1,18 @@
 use cosmic::{
-    iced::{futures::SinkExt, stream, Subscription},
+    iced::{
+        advanced::subscription::from_recipe, futures::SinkExt, stream, Subscription,
+    },
     widget, Task,
 };
 use gio::{glib, prelude::*};
-use std::{any::TypeId, cell::Cell, future::pending, path::PathBuf, sync::Arc};
+use std::{cell::Cell, future::pending, path::PathBuf, sync::Arc};
 use tokio::sync::{mpsc, Mutex};
 
 use super::{Mounter, MounterAuth, MounterItem, MounterItems, MounterMessage};
 use crate::{
     config::IconSizes,
     err_str,
+    recipe::ReadyStream,
     tab1::{self, DirSize, ItemMetadata, ItemThumbnail, Location},
 };
 
@@ -500,9 +503,8 @@ impl Mounter for Gvfs {
     fn subscription(&self) -> Subscription<MounterMessage> {
         let command_tx = self.command_tx.clone();
         let event_rx = self.event_rx.clone();
-        Subscription::run_with_id(
-            TypeId::of::<Self>(),
-            stream::channel(1, |mut output| async move {
+        from_recipe(ReadyStream(
+            stream::channel(1, |mut output: cosmic::iced::futures::channel::mpsc::Sender<MounterMessage>| async move {
                 command_tx.send(Cmd::Rescan).unwrap();
                 while let Some(event) = event_rx.lock().await.recv().await {
                     match event {
@@ -526,6 +528,7 @@ impl Mounter for Gvfs {
                 }
                 pending().await
             }),
-        )
+            "gvfs",
+        ))
     }
 }

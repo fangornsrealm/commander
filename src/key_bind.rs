@@ -1,6 +1,6 @@
 use cosmic::{
     iced::keyboard::Key,
-    iced_core::keyboard::key::Named,
+    iced::core::keyboard::key::Named,
     widget::menu::key_bind::{KeyBind, Modifier},
 };
 use std::collections::HashMap;
@@ -24,7 +24,7 @@ pub fn key_binds(mode: &tab1::Mode) -> HashMap<KeyBind, Action> {
     }
 
     // Common keys
-    bind!([], Key::Named(Named::Space), Gallery);
+    bind!([], Key::Character(" ".into()), Gallery);
     bind!([Shift], Key::Named(Named::Tab), SwapPanels);
     bind!([], Key::Named(Named::F2), F2Rename);
     bind!([], Key::Named(Named::F3), F3View);
@@ -50,7 +50,7 @@ pub fn key_binds(mode: &tab1::Mode) -> HashMap<KeyBind, Action> {
     bind!([Shift], Key::Named(Named::End), SelectLast);
     bind!([Ctrl, Shift], Key::Character("n".into()), NewFolder);
     bind!([], Key::Named(Named::Enter), Open);
-    bind!([Ctrl], Key::Named(Named::Space), Preview);
+    bind!([Ctrl], Key::Character(" ".into()), Preview);
     bind!([Ctrl], Key::Character("h".into()), ToggleShowHidden);
     bind!([Ctrl], Key::Character("a".into()), SelectAll);
     bind!([Ctrl], Key::Character("=".into()), ZoomIn);

@@ -1,10 +1,10 @@
+use commander::dialog::{Dialog, DialogKind, DialogMessage, DialogResult};
 use cosmic::{
     app::{self, Core, Settings, Task},
     executor,
     iced::{window, Subscription},
     widget, Application, Element,
 };
-use commander::dialog::{Dialog, DialogKind, DialogMessage, DialogResult};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
@@ -81,15 +81,15 @@ impl Application for App {
         Task::none()
     }
 
-    fn view_window(&self, window_id: window::Id) -> Element<Message> {
+    fn view_window(&self, window_id: window::Id) -> Element<'_, Message> {
         match &self.dialog_opt {
             Some(dialog) => dialog.view(window_id),
             None => widget::text::body("No dialog").into(),
         }
     }
 
-    fn view(&self) -> Element<Message> {
-        let mut column = widget::column().spacing(8).padding(8);
+    fn view(&self) -> Element<'_, Message> {
+        let mut column = widget::column::with_capacity(5).spacing(8).padding(8);
         {
             let mut button = widget::button::standard("Open File");
             if self.dialog_opt.is_none() {

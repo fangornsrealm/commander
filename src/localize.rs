@@ -8,14 +8,14 @@ use i18n_embed::{
 };
 use icu_collator::{Collator, CollatorOptions, Numeric};
 use icu_provider::DataLocale;
-use once_cell::sync::Lazy;
 use rust_embed::RustEmbed;
+use std::sync::LazyLock;
 
 #[derive(RustEmbed)]
 #[folder = "i18n/"]
 struct Localizations;
 
-pub static LANGUAGE_LOADER: Lazy<FluentLanguageLoader> = Lazy::new(|| {
+pub static LANGUAGE_LOADER: LazyLock<FluentLanguageLoader> = LazyLock::new(|| {
     let loader: FluentLanguageLoader = fluent_language_loader!();
 
     loader
@@ -25,7 +25,7 @@ pub static LANGUAGE_LOADER: Lazy<FluentLanguageLoader> = Lazy::new(|| {
     loader
 });
 
-pub static LANGUAGE_SORTER: Lazy<Collator> = Lazy::new(|| {
+pub static LANGUAGE_SORTER: LazyLock<Collator> = LazyLock::new(|| {
     let mut options = CollatorOptions::new();
     options.numeric = Some(Numeric::On);
 
@@ -40,7 +40,7 @@ pub static LANGUAGE_SORTER: Lazy<Collator> = Lazy::new(|| {
         .expect("Creating a collator from the system's current language, the fallback language, or American English should succeed")
 });
 
-pub static LANGUAGE_CHRONO: Lazy<chrono::Locale> = Lazy::new(|| {
+pub static LANGUAGE_CHRONO: LazyLock<chrono::Locale> = LazyLock::new(|| {
     std::env::var("LC_TIME")
         .or_else(|_| std::env::var("LANG"))
         .ok()

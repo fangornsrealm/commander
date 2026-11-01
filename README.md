@@ -8,53 +8,48 @@ This project is based on [COSMIC files](https://github.com/pop-os/cosmic-files) 
 
 > [!NOTE]
 > The basic functionality is working. Two panels, copying or moving files or tabs between them. A Terminal to run commands. And all the features of COSMIC Files that it inherits. Good enough to close krusader and use commander instead.
->
-> Drag'nDrop is only working out of Commander panels into other programs. Dropping files into directories or paths into the terminal does not work. Implementing a drop-target for pane_grid resulted in a drop-area that does not call the specified handler functions. The problem has to be deeper in the guts of iced.
 
-## Install
+
+
+## Prerequisites
+
+- **Rust** (MSRV 1.88, pinned in `rust-toolchain.toml`) — install via [rustup](https://rustup.rs)
+- **`just`** task runner — see [just.systems](https://just.systems)
+- **System libraries** (Debian/Ubuntu):
+  ```sh
+  sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev libglib2.0-dev
+  ```
+- No C libraries are required for compression: `.bz2` and `.xz`/`.lzma`
+  extraction use the pure-Rust crates `bzip2-rs` and `lzma-rs`, so there is
+  no `libbz2-dev`/`liblzma-dev` build dependency.
+
+## Build & Install
 
 ```sh
-# Clone the project using `git`
 git clone https://github.com/fangornsrealm/commander
-# Change to the directory that was created by `git`
 cd commander
-# Build an optimized version using `cargo`, this may take a while
-cargo build --release
-# install
+just build-release   # optimized build (this may take a while)
 sudo just install
+# or just run it:
+cargo run --release
 ```
 
 ## Packaging
 
 ```sh
-# Clone the project using `git`
-git clone https://github.com/fangornsrealm/commander
-# Change to the directory that was created by `git`
-cd commander
-# Build an optimized version using `cargo`, this may take a while
 just build-release
-# build Debian / Ubuntu package
-just build-deb
-
-# build Redhat / Fedora / Suse package 
-just build-rpm
+just build-deb       # Debian / Ubuntu .deb
+just build-rpm       # Redhat / Fedora / SUSE .rpm
 ```
 
-## Build the project from source
+## Resources
 
-```sh
-# Clone the project using `git`
-git clone https://github.com/fangornsrealm/commander
-# Change to the directory that was created by `git`
-cd commander
-# Build an optimized version using `cargo`, this may take a while
-cargo build --release
-# Run the optimized version using `cargo`
-cargo run --release
-```
+- [Contributing guide](CONTRIBUTING.md) — development workflow, feature flags, linting
+- [Changelog](CHANGELOG.md) — release history
+- [`justfile`](justfile) — all available build/install/package recipes (`just --list`)
 
 ## License
 
-This project is licensed under [GPLv3](LICENSE)
+This project is licensed under [GPL-3.0](LICENSE).
 
-Parts coming from the Iced project and are just modified are specially marked sand use the MIT license [MIT](http://opensource.org/licenses/MIT)
+Parts derived from the Iced project are modified and carry their own MIT license headers.

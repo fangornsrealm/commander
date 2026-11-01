@@ -349,4 +349,3 @@ pub fn terminal_themes() -> HashMap<(String, ColorSchemeKind), Colors> {
     );
     themes
 }
-

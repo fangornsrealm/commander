@@ -1,16 +1,12 @@
-use cosmic::iced::widget::container;
 use cosmic::iced::core::{self, Element};
+use cosmic::iced::widget::container;
 
 /// The controls of a [`Pane`].
 ///
 /// [`Pane`]: super::Pane
 #[allow(missing_debug_implementations)]
-pub struct Controls<
-    'a,
-    Message,
-    Theme = cosmic::iced::Theme,
-    Renderer = cosmic::iced::Renderer,
-> where
+pub struct Controls<'a, Message, Theme = cosmic::iced::Theme, Renderer = cosmic::iced::Renderer>
+where
     Theme: container::Catalog,
     Renderer: core::Renderer,
 {
@@ -24,9 +20,7 @@ where
     Renderer: core::Renderer,
 {
     /// Creates a new [`Controls`] with the given content.
-    pub fn new(
-        content: impl Into<Element<'a, Message, Theme, Renderer>>,
-    ) -> Self {
+    pub fn new(content: impl Into<Element<'a, Message, Theme, Renderer>>) -> Self {
         Self {
             full: content.into(),
             compact: None,

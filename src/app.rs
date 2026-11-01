@@ -13,11 +13,12 @@ use cosmic::iced::{
     Limits,
 };
 #[cfg(feature = "wayland")]
-use cosmic::iced_winit::commands::overlap_notify::overlap_notify;
+use cosmic::iced::platform_specific::shell::wayland::commands::overlap_notify::overlap_notify;
 use cosmic::{
-    app::{self, context_drawer, message, Core, Task},
+    app::{self, context_drawer, Core, Task},
     cosmic_config, cosmic_theme, executor,
     iced::{
+        advanced::subscription::from_recipe,
         clipboard::dnd::DndAction,
         event,
         futures::{self, SinkExt},
@@ -26,16 +27,15 @@ use cosmic::{
         window::{self, Event as WindowEvent, Id as WindowId},
         Alignment, Event, Length, Point, Rectangle, Size, Subscription,
     },
-    iced_runtime::clipboard,
+    iced::runtime::clipboard,
     style, theme,
     widget::{
         self,
-        dnd_destination::DragId,
-        horizontal_space,
         menu::{action::MenuAction, key_bind::KeyBind},
         //pane_grid,
         segmented_button::{self, Entity},
-        vertical_space, DndDestination,
+        space,
+        DndDestination,
     },
     Application, ApplicationExt, Element,
 };
@@ -44,7 +44,6 @@ use notify_debouncer_full::{
     notify::{self, RecommendedWatcher, Watcher},
     DebouncedEvent, Debouncer, FileIdMap,
 };
-use slotmap::Key as SlotMapKey;
 use std::{
     any::TypeId,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
@@ -75,6 +74,7 @@ use crate::{
     mounter::{MounterAuth, MounterItem, MounterItems, MounterKey, MounterMessage, MOUNTERS},
     operation::{Controller, Operation, OperationSelection, ReplaceResult},
     pane_grid::{self, PaneGrid},
+    recipe::ReadyStream,
     spawn_detached::spawn_detached,
     tab1::{
         self, HeadingOptions as HeadingOptions1, ItemMetadata as ItemMetadata1,
@@ -279,33 +279,20 @@ impl MenuAction for Action {
 }
 
 #[derive(Clone, Debug)]
-pub struct PreviewItem1(pub tab1::Item);
+pub struct PreviewItem(pub tab1::Item);
 
-impl PartialEq for PreviewItem1 {
+impl PartialEq for PreviewItem {
     fn eq(&self, other: &Self) -> bool {
         self.0.location_opt == other.0.location_opt
     }
 }
 
-impl Eq for PreviewItem1 {}
-
-#[derive(Clone, Debug)]
-pub struct PreviewItem2(pub tab2::Item);
-
-impl PartialEq for PreviewItem2 {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.location_opt == other.0.location_opt
-    }
-}
-
-impl Eq for PreviewItem2 {}
+impl Eq for PreviewItem {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PreviewKind {
-    Custom1(PreviewItem1),
-    Location1(Location1),
-    Custom2(PreviewItem2),
-    Location2(Location2),
+    Custom(PreviewItem),
+    Location(Location1),
     Selected,
 }
 
@@ -332,40 +319,6 @@ impl Pane {
     }
 }
 
-fn convert_location1_to_location2(location: &Location1) -> Location2 {
-    let loc;
-    match location {
-        Location1::Path(path) => loc = Location2::Path(path.to_owned()),
-        Location1::Trash => loc = Location2::Trash,
-        Location1::Network(s1, s2) => loc = Location2::Network(s1.clone(), s2.clone()),
-        Location1::Recents => loc = Location2::Recents,
-        Location1::Search(path, s, b, i) => {
-            loc = Location2::Search(path.to_owned(), s.clone(), b.to_owned(), i.to_owned())
-        }
-        Location1::Desktop(p, s, d) => {
-            loc = Location2::Desktop(p.to_owned(), s.to_owned(), d.to_owned())
-        }
-    }
-    loc
-}
-
-fn convert_location2_to_location1(location: &Location2) -> Location1 {
-    let loc;
-    match location {
-        Location2::Path(path) => loc = Location1::Path(path.to_owned()),
-        Location2::Trash => loc = Location1::Trash,
-        Location2::Network(s1, s2) => loc = Location1::Network(s1.clone(), s2.clone()),
-        Location2::Recents => loc = Location1::Recents,
-        Location2::Search(path, s, b, i) => {
-            loc = Location1::Search(path.to_owned(), s.clone(), b.to_owned(), i.to_owned())
-        }
-        Location2::Desktop(p, s, d) => {
-            loc = Location1::Desktop(p.to_owned(), s.to_owned(), d.to_owned())
-        }
-    }
-    loc
-}
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NavMenuAction {
     Open(segmented_button::Entity),
@@ -378,10 +331,10 @@ pub enum NavMenuAction {
 }
 
 impl MenuAction for NavMenuAction {
-    type Message = cosmic::app::Message<Message>;
+    type Message = cosmic::Action<Message>;
 
     fn message(&self) -> Self::Message {
-        cosmic::app::Message::App(Message::NavMenuAction(*self))
+        cosmic::Action::App(Message::NavMenuAction(*self))
     }
 }
 
@@ -412,6 +365,7 @@ pub enum Message {
     DialogUpdateComplete(DialogPage),
     EditLocation(Option<Entity>),
     EmptyTrash(Option<Entity>),
+    #[cfg(feature = "desktop")]
     ExecEntryAction(Option<Entity>, usize),
     ExtractHere(Option<Entity>),
     F2Rename,
@@ -577,25 +531,18 @@ pub enum Message {
     DndExitTab,
     DndExitTabLeft,
     DndExitTabRight,
-    DndHoveredWindow(PathBuf),
+    DndHoveredWindow(Vec<PathBuf>),
     DndHoveredLeftWindow,
-    DndEnterDndDestination(f64, f64, Vec<String>),
-    DndExitDndDestination,
-    DndDropDndDataReceived(String, Vec<u8>),
-    DndDropDndDestination(f64, f64),
-    DndActionSelectedDestination(DndAction),
-    DndEnterPanegrid(Vec<String>),
-    DndExitPanegrid,
-    DndDropPanegrid(Option<DragId>, Option<ClipboardPaste>, DndAction),
-    DndPaneDrop(Option<(Pane, crate::dnd::DndDrop)>),
-    DndDropWindow(PathBuf),
+    DndPaneDrop(Option<(Pane, crate::dnd::DndDrop, DndAction)>),
+    DndPaneHover(Pane, bool),
+    DndDropWindow(Vec<PathBuf>),
     DndDropTabLeft(Entity, Option<ClipboardPaste>, DndAction),
     DndDropTabRight(Entity, Option<ClipboardPaste>, DndAction),
     DndDropNav(Entity, Option<ClipboardPaste>, DndAction),
     Recents,
     #[cfg(feature = "wayland")]
     OutputEvent(OutputEvent, WlOutput),
-    Cosmic(app::cosmic::Message),
+    Cosmic(app::Action),
     None,
 }
 
@@ -746,7 +693,6 @@ fn osstr_to_string(osstr: std::ffi::OsString) -> String {
 /// The [`App`] stores application-specific state.
 pub struct App {
     core: Core,
-    nav_bar_context_id: segmented_button::Entity,
     nav_model: segmented_button::SingleSelectModel,
     tab_model1: segmented_button::Model<segmented_button::SingleSelect>,
     tab_model2: segmented_button::Model<segmented_button::SingleSelect>,
@@ -801,18 +747,10 @@ pub struct App {
     windows: HashMap<window::Id, WindowKind>,
     nav_dnd_hover: Option<(Location1, Instant)>,
     nav_dnd_hover_right: Option<(Location2, Instant)>,
-    tab_dnd_hover: Option<(Entity, Instant)>,
+
     tab_dnd_hover_left: Option<(Entity, Instant)>,
     tab_dnd_hover_right: Option<(Entity, Instant)>,
-    panegrid_drag_id: DragId,
-    term_drag_id: DragId,
-    nav_drag_id: DragId,
-    tab_drag_id_left: DragId,
-    tab_drag_id_right: DragId,
-    tab_drag_id_buttons: DragId,
-    dnd_drag_pane: Option<pane_grid::Pane>,
-    dnd_drag_id: Option<DragId>,
-    dnd_action: Option<DndAction>,
+    dnd_hover_pane: Option<Pane>,
 }
 
 impl App {
@@ -1251,7 +1189,7 @@ impl App {
             async move {
                 let location2 = location.clone();
                 match tokio::task::spawn_blocking(move || location2.scan(icon_sizes)).await {
-                    Ok((parent_item_opt, items)) => message::app(Message::TabRescanLeft(
+                    Ok((parent_item_opt, items)) => cosmic::action::app(Message::TabRescanLeft(
                         entity,
                         location,
                         parent_item_opt,
@@ -1260,7 +1198,7 @@ impl App {
                     )),
                     Err(err) => {
                         log::warn!("failed to rescan: {}", err);
-                        message::none()
+                        cosmic::action::none()
                     }
                 }
             },
@@ -1281,7 +1219,7 @@ impl App {
             async move {
                 let location2 = location.clone();
                 match tokio::task::spawn_blocking(move || location2.scan(icon_sizes)).await {
-                    Ok((parent_item_opt, items)) => message::app(Message::TabRescanRight(
+                    Ok((parent_item_opt, items)) => cosmic::action::app(Message::TabRescanRight(
                         entity,
                         location,
                         parent_item_opt,
@@ -1290,7 +1228,7 @@ impl App {
                     )),
                     Err(err) => {
                         log::warn!("failed to rescan: {}", err);
-                        message::none()
+                        cosmic::action::none()
                     }
                 }
             },
@@ -1517,17 +1455,14 @@ impl App {
                     segmented_button::ModelBuilder::default().build(),
                 ) {
                     self.pane_model.panestates.resize(sb, 0.75);
-                    self.pane_model
-                        .insert(PaneType::TerminalPane, t, st, self.term_drag_id);
-                    self.pane_model
-                        .insert(PaneType::ButtonPane, b, sb, self.tab_drag_id_buttons);
+                    self.pane_model.insert(PaneType::TerminalPane, t, st);
+                    self.pane_model.insert(PaneType::ButtonPane, b, sb);
                     if let Some((r, sr)) = self.pane_model.panestates.split(
                         pane_grid::Axis::Vertical,
                         pane,
                         segmented_button::ModelBuilder::default().build(),
                     ) {
-                        self.pane_model
-                            .insert(PaneType::RightPane, r, sr, self.tab_drag_id_right);
+                        self.pane_model.insert(PaneType::RightPane, r, sr);
                     }
                 }
             }
@@ -1546,10 +1481,8 @@ impl App {
                     segmented_button::ModelBuilder::default().build(),
                 ) {
                     self.pane_model.panestates.resize(sb, 0.75);
-                    self.pane_model
-                        .insert(PaneType::TerminalPane, t, st, self.term_drag_id);
-                    self.pane_model
-                        .insert(PaneType::ButtonPane, b, sb, self.tab_drag_id_buttons);
+                    self.pane_model.insert(PaneType::TerminalPane, t, st);
+                    self.pane_model.insert(PaneType::ButtonPane, b, sb);
                 }
             }
         } else if !show_button_row && show_embedded_terminal && show_second_panel {
@@ -1560,15 +1493,13 @@ impl App {
             ) {
                 self.pane_model.panes_created += 1;
                 self.pane_model.panestates.resize(st, 0.75);
-                self.pane_model
-                    .insert(PaneType::TerminalPane, t, st, self.term_drag_id);
+                self.pane_model.insert(PaneType::TerminalPane, t, st);
                 if let Some((r, sr)) = self.pane_model.panestates.split(
                     pane_grid::Axis::Vertical,
                     pane,
                     segmented_button::ModelBuilder::default().build(),
                 ) {
-                    self.pane_model
-                        .insert(PaneType::RightPane, r, sr, self.tab_drag_id_right);
+                    self.pane_model.insert(PaneType::RightPane, r, sr);
                 }
             }
         } else if show_button_row && !show_embedded_terminal && show_second_panel {
@@ -1579,15 +1510,13 @@ impl App {
             ) {
                 self.pane_model.panes_created += 1;
                 self.pane_model.panestates.resize(sb, 0.95);
-                self.pane_model
-                    .insert(PaneType::ButtonPane, b, sb, self.tab_drag_id_buttons);
+                self.pane_model.insert(PaneType::ButtonPane, b, sb);
                 if let Some((r, sr)) = self.pane_model.panestates.split(
                     pane_grid::Axis::Vertical,
                     pane,
                     segmented_button::ModelBuilder::default().build(),
                 ) {
-                    self.pane_model
-                        .insert(PaneType::RightPane, r, sr, self.tab_drag_id_right);
+                    self.pane_model.insert(PaneType::RightPane, r, sr);
                 }
             }
         } else if !show_button_row && show_embedded_terminal && !show_second_panel {
@@ -1598,8 +1527,7 @@ impl App {
             ) {
                 self.pane_model.panes_created += 1;
                 self.pane_model.panestates.resize(st, 0.85);
-                self.pane_model
-                    .insert(PaneType::TerminalPane, t, st, self.tab_drag_id_right);
+                self.pane_model.insert(PaneType::TerminalPane, t, st);
             }
         } else if show_button_row && !show_embedded_terminal && !show_second_panel {
             if let Some((b, sb)) = self.pane_model.panestates.split(
@@ -1609,8 +1537,7 @@ impl App {
             ) {
                 self.pane_model.panes_created += 1;
                 self.pane_model.panestates.resize(sb, 0.95);
-                self.pane_model
-                    .insert(PaneType::ButtonPane, b, sb, self.tab_drag_id_buttons);
+                self.pane_model.insert(PaneType::ButtonPane, b, sb);
             }
         } else if !show_button_row && !show_embedded_terminal && show_second_panel {
             if let Some((r, sr)) = self.pane_model.panestates.split(
@@ -1619,8 +1546,7 @@ impl App {
                 segmented_button::ModelBuilder::default().build(),
             ) {
                 self.pane_model.panes_created += 1;
-                self.pane_model
-                    .insert(PaneType::RightPane, r, sr, self.tab_drag_id_right);
+                self.pane_model.insert(PaneType::RightPane, r, sr);
             }
         } else {
             //
@@ -1651,7 +1577,7 @@ impl App {
             // Tabs are collected first to placate the borrowck
             let tabs: Vec<_> = self.tab_model1.iter().collect();
             // Update main conf and each tab with the new config
-            commands = std::iter::once(cosmic::app::command::set_theme(
+            commands = std::iter::once(cosmic::command::set_theme(
                 self.config.app_theme.theme(),
             ))
             .chain(tabs.into_iter().map(|entity| {
@@ -1666,7 +1592,7 @@ impl App {
             // Tabs are collected first to placate the borrowck
             let tabs: Vec<_> = self.tab_model2.iter().collect();
             // Update main conf and each tab with the new config
-            commands = std::iter::once(cosmic::app::command::set_theme(
+            commands = std::iter::once(cosmic::command::set_theme(
                 self.config.app_theme.theme(),
             ))
             .chain(tabs.into_iter().map(|entity| {
@@ -1689,70 +1615,60 @@ impl App {
                 Vec::new()
             }
         };
-        for entity in entities {
-            let mut needs_reload = Vec::new();
-            if self.active_panel == PaneType::LeftPane {
+        if self.active_panel == PaneType::LeftPane {
+            let needs_reload: Vec<_> = entities
+                .into_iter()
+                .filter_map(|entity| {
+                    let tab = self.tab_model1.data::<Tab1>(entity)?;
+                    let (path, output) = match &tab.location {
+                        Location1::Desktop(path, output, _) => (path.clone(), output.clone()),
+                        _ => return None,
+                    };
+                    Some((
+                        entity,
+                        Location1::Desktop(path, output, self.config.desktop),
+                    ))
+                })
+                .collect();
+            let mut commands = Vec::with_capacity(needs_reload.len());
+            for (entity, location) in needs_reload {
                 if let Some(tab) = self.tab_model1.data_mut::<Tab1>(entity) {
-                    if let Location1::Desktop(path, output, _) = &tab.location {
-                        needs_reload.push((
-                            entity,
-                            Location1::Desktop(path.clone(), output.clone(), self.config.desktop),
-                        ));
-                    };
+                    tab.location = location.clone();
                 }
-                let mut commands = Vec::with_capacity(needs_reload.len());
-                for (entity, location) in needs_reload {
-                    if let Some(tab) = self.tab_model1.data_mut::<Tab1>(entity) {
-                        tab.location = location.clone();
-                    }
-                    commands.push(self.update_tab_left(entity, location, None));
-                }
-                return Task::batch(commands);
-            } else {
-                let mut needs_reload = Vec::new();
-                if let Some(tab) = self.tab_model2.data_mut::<Tab2>(entity) {
-                    if let Location2::Desktop(path, output, _) = &tab.location {
-                        needs_reload.push((
-                            entity,
-                            Location2::Desktop(path.clone(), output.clone(), self.config.desktop),
-                        ));
-                    };
-                }
-                let mut commands = Vec::with_capacity(needs_reload.len());
-                for (entity, location) in needs_reload {
-                    if let Some(tab) = self.tab_model2.data_mut::<Tab2>(entity) {
-                        tab.location = location.clone();
-                    }
-                    commands.push(self.update_tab_right(entity, location, None));
-                }
-                return Task::batch(commands);
+                commands.push(self.update_tab_left(entity, location, None));
             }
+            Task::batch(commands)
+        } else {
+            let needs_reload: Vec<_> = entities
+                .into_iter()
+                .filter_map(|entity| {
+                    let tab = self.tab_model2.data::<Tab2>(entity)?;
+                    let (path, output) = match &tab.location {
+                        Location2::Desktop(path, output, _) => (path.clone(), output.clone()),
+                        _ => return None,
+                    };
+                    Some((
+                        entity,
+                        Location2::Desktop(path, output, self.config.desktop),
+                    ))
+                })
+                .collect();
+            let mut commands = Vec::with_capacity(needs_reload.len());
+            for (entity, location) in needs_reload {
+                if let Some(tab) = self.tab_model2.data_mut::<Tab2>(entity) {
+                    tab.location = location.clone();
+                }
+                commands.push(self.update_tab_right(entity, location, None));
+            }
+            Task::batch(commands)
         }
-        Task::none()
     }
 
     fn activate_nav_model_location_left(&mut self, location: &Location1) {
         let nav_bar_id = self.nav_model.iter().find(|&id| {
             self.nav_model
                 .data::<Location1>(id)
-                .map(|l| l == location)
-                .unwrap_or_default()
-        });
-
-        if let Some(id) = nav_bar_id {
-            self.nav_model.activate(id);
-        } else {
-            let active = self.nav_model.active();
-            segmented_button::Selectable::deactivate(&mut self.nav_model, active);
-        }
-    }
-
-    fn activate_nav_model_location_right(&mut self, location: &Location2) {
-        let loc = convert_location2_to_location1(location);
-        let nav_bar_id = self.nav_model.iter().find(|&id| {
-            self.nav_model
-                .data::<Location1>(id)
-                .map(|l| *l == loc)
+                .map(|l| *l == *location)
                 .unwrap_or_default()
         });
 
@@ -1868,7 +1784,7 @@ impl App {
 
         let tab_entity = self.tab_model2.active();
         if let Some(tab) = self.tab_model2.data::<Tab2>(tab_entity) {
-            self.activate_nav_model_location_right(&tab.location.clone());
+            self.activate_nav_model_location_left(&tab.location.clone());
         }
     }
 
@@ -1887,7 +1803,7 @@ impl App {
                         })
                         .await
                         .unwrap();
-                        message::app(Message::MaybeExit)
+                        cosmic::action::app(Message::MaybeExit)
                     },
                     |x| x,
                 );
@@ -2017,7 +1933,7 @@ impl App {
         Task::none()
     }
 
-    fn about(&self) -> Element<Message> {
+    fn about(&self) -> Element<'_, Message> {
         let cosmic_theme::Spacing { space_xxs, .. } = theme::active().cosmic().spacing;
         let repository = "https://github.com/fangornsrealm/commander";
         let hash = env!("VERGEN_GIT_SHA");
@@ -2051,7 +1967,7 @@ impl App {
         .into()
     }
 
-    fn network_drive(&self) -> Element<Message> {
+    fn network_drive(&self) -> Element<'_, Message> {
         let cosmic_theme::Spacing {
             space_xxs, space_m, ..
         } = theme::active().cosmic().spacing;
@@ -2082,7 +1998,7 @@ impl App {
         .into()
     }
 
-    fn desktop_view_options(&self) -> Element<Message> {
+    fn desktop_view_options(&self) -> Element<'_, Message> {
         let cosmic_theme::Spacing {
             space_m, space_l, ..
         } = theme::active().cosmic().spacing;
@@ -2164,7 +2080,7 @@ impl App {
             .into()
     }
 
-    fn edit_history(&self) -> Element<Message> {
+    fn edit_history(&self) -> Element<'_, Message> {
         let cosmic_theme::Spacing { space_m, .. } = theme::active().cosmic().spacing;
 
         let mut children = Vec::new();
@@ -2178,8 +2094,8 @@ impl App {
                 let progress = controller.progress();
                 section = section.add(widget::column::with_children(vec![
                     widget::row::with_children(vec![
-                        widget::progress_bar(0.0..=1.0, progress)
-                            .height(progress_bar_height)
+                        widget::progress_bar::determinate_linear(progress)
+                            .girth(progress_bar_height)
                             .into(),
                         if controller.is_paused() {
                             widget::tooltip(
@@ -2270,10 +2186,10 @@ impl App {
             }
         };
         match kind {
-            PreviewKind::Custom1(PreviewItem1(item)) => {
+            PreviewKind::Custom(PreviewItem(item)) => {
                 children.push(item.preview_view(Some(&self.mime_app_cache), IconSizes::default()));
             }
-            PreviewKind::Location1(location) => {
+            PreviewKind::Location(location) => {
                 if let Some(tab) = self.tab_model1.data::<Tab1>(entity) {
                     if let Some(items) = tab.items_opt() {
                         for item in items.iter() {
@@ -2315,7 +2231,6 @@ impl App {
                     }
                 }
             }
-            _ => {}
         }
         widget::column::with_children(children)
             .padding(if context_drawer {
@@ -2346,10 +2261,10 @@ impl App {
             }
         };
         match kind {
-            PreviewKind::Custom2(PreviewItem2(item)) => {
+            PreviewKind::Custom(PreviewItem(item)) => {
                 children.push(item.preview_view(Some(&self.mime_app_cache), IconSizes::default()));
             }
-            PreviewKind::Location2(location) => {
+            PreviewKind::Location(location) => {
                 if let Some(tab) = self.tab_model2.data::<Tab2>(entity) {
                     if let Some(items) = tab.items_opt() {
                         for item in items.iter() {
@@ -2391,7 +2306,6 @@ impl App {
                     }
                 }
             }
-            _ => {}
         }
         widget::column::with_children(children)
             .padding(if context_drawer {
@@ -2402,7 +2316,7 @@ impl App {
             .into()
     }
 
-    fn settings(&self) -> Element<Message> {
+    fn settings(&self) -> Element<'_, Message> {
         // TODO: Should dialog be updated here too?
         widget::column::with_children(vec![
             widget::settings::section()
@@ -2461,7 +2375,7 @@ impl App {
         pane: pane_grid::Pane,
         _tab_model: &TabModel,
         _size: Size,
-    ) -> Element<Message> {
+    ) -> Element<'_, Message> {
         let cosmic_theme::Spacing {
             space_xxs, space_s, ..
         } = theme::active().cosmic().spacing;
@@ -2491,7 +2405,6 @@ impl App {
                             .button_spacing(space_xxs)
                             .on_activate(|entity| Message::TabActivateLeftEntity(entity))
                             .on_close(|entity| Message::TabCloseLeft(Some(entity)))
-                            .drag_id(self.tab_drag_id_left)
                             .on_dnd_enter(|entity, _| Message::DndEnterTabLeft(entity))
                             .on_dnd_leave(|_| Message::DndExitTabLeft)
                             .on_dnd_drop(|entity, data, action| {
@@ -2512,7 +2425,7 @@ impl App {
                 // The toaster is added on top of an empty element to ensure that it does not override context menus
                 tab_column = tab_column.push(widget::toaster(
                     &self.toasts_left,
-                    widget::horizontal_space(),
+                    widget::space::horizontal(),
                 ));
             } else if pane_type == PaneType::RightPane {
                 tab_column = tab_column.push(
@@ -2522,7 +2435,6 @@ impl App {
                             .button_spacing(space_xxs)
                             .on_activate(|entity| Message::TabActivateRightEntity(entity))
                             .on_close(|entity| Message::TabCloseRight(Some(entity)))
-                            .drag_id(self.tab_drag_id_right)
                             .on_dnd_enter(|entity, _| Message::DndEnterTabRight(entity))
                             .on_dnd_leave(|_| Message::DndExitTabRight)
                             .on_dnd_drop(|entity, data, action| {
@@ -2542,7 +2454,7 @@ impl App {
                 // The toaster is added on top of an empty element to ensure that it does not override context menus
                 tab_column = tab_column.push(widget::toaster(
                     &self.toasts_right,
-                    widget::horizontal_space(),
+                    widget::space::horizontal(),
                 ));
             }
             let p = Pane {
@@ -2550,17 +2462,15 @@ impl App {
                 is_pinned: false,
             };
             DndDestination::for_data::<crate::dnd::DndDrop>(tab_column, move |data, action| {
-                if let Some(data) = data {
-                    if action == DndAction::Move {
-                        Message::DndPaneDrop(Some((p, data)))
-                    } else {
-                        log::warn!("unsuppported action: {:?}", action);
-                        Message::DndPaneDrop(None)
+                match data {
+                    Some(drop) if action.intersects(DndAction::Copy | DndAction::Move) => {
+                        Message::DndPaneDrop(Some((p, drop, action)))
                     }
-                } else {
-                    Message::DndPaneDrop(None)
+                    _ => Message::DndPaneDrop(None),
                 }
             })
+            .on_enter(move |_x, _y, _mimes| Message::DndPaneHover(p, true))
+            .on_leave(move || Message::DndPaneHover(p, false))
             .into()
         } else if pane_type == PaneType::ButtonPane {
             let tab_column = widget::row::with_children(vec![
@@ -2568,42 +2478,42 @@ impl App {
                     .on_press(Message::F2Rename)
                     .width(cosmic::iced::Length::Shrink)
                     .into(),
-                widget::horizontal_space().into(),
+                widget::space::horizontal().into(),
                 widget::button::text(fl!("f3-view"))
                     .on_press(Message::F3View)
                     .width(cosmic::iced::Length::Shrink)
                     .into(),
-                widget::horizontal_space().into(),
+                widget::space::horizontal().into(),
                 widget::button::text(fl!("f4-edit"))
                     .on_press(Message::F4Edit)
                     .width(cosmic::iced::Length::Shrink)
                     .into(),
-                widget::horizontal_space().into(),
+                widget::space::horizontal().into(),
                 widget::button::text(fl!("f5-copy"))
                     .on_press(Message::F5Copy)
                     .width(cosmic::iced::Length::Shrink)
                     .into(),
-                widget::horizontal_space().into(),
+                widget::space::horizontal().into(),
                 widget::button::text(fl!("f6-move"))
                     .on_press(Message::F6Move)
                     .width(cosmic::iced::Length::Shrink)
                     .into(),
-                widget::horizontal_space().into(),
+                widget::space::horizontal().into(),
                 widget::button::text(fl!("f7-mkdir"))
                     .on_press(Message::F7Mkdir)
                     .width(cosmic::iced::Length::Shrink)
                     .into(),
-                widget::horizontal_space().into(),
+                widget::space::horizontal().into(),
                 widget::button::text(fl!("f8-delete"))
                     .on_press(Message::F8Delete)
                     .width(cosmic::iced::Length::Shrink)
                     .into(),
-                widget::horizontal_space().into(),
+                widget::space::horizontal().into(),
                 widget::button::text(fl!("f9-Term"))
                     .on_press(Message::F9Terminal)
                     .width(cosmic::iced::Length::Shrink)
                     .into(),
-                widget::horizontal_space().into(),
+                widget::space::horizontal().into(),
                 widget::button::text(fl!("f10-quit"))
                     .on_press(Message::F10Quit)
                     .width(cosmic::iced::Length::Shrink)
@@ -2655,17 +2565,15 @@ impl App {
                 is_pinned: false,
             };
             DndDestination::for_data::<crate::dnd::DndDrop>(tab_column, move |data, action| {
-                if let Some(data) = data {
-                    if action == DndAction::Move {
-                        Message::DndPaneDrop(Some((p, data)))
-                    } else {
-                        log::warn!("unsuppported action: {:?}", action);
-                        Message::DndPaneDrop(None)
+                match data {
+                    Some(drop) if action.intersects(DndAction::Copy | DndAction::Move) => {
+                        Message::DndPaneDrop(Some((p, drop, action)))
                     }
-                } else {
-                    Message::DndPaneDrop(None)
+                    _ => Message::DndPaneDrop(None),
                 }
             })
+            .on_enter(move |_x, _y, _mimes| Message::DndPaneHover(p, true))
+            .on_leave(move || Message::DndPaneHover(p, false))
             .into()
         }
     }
@@ -2908,10 +2816,8 @@ impl Application for App {
         let key_binds_terminal = key_binds_terminal();
 
         let window_id_opt = core.main_window_id();
-        let tab_drag_id_left = DragId::new();
         let pane_model = crate::commanderpanegrid::CommanderPaneGrid::new(
             segmented_button::ModelBuilder::default().build(),
-            tab_drag_id_left,
         );
         //let initial_pane_id= 0;
         //let config = alacritty_terminal::term::Config {..Default::default()};
@@ -2920,7 +2826,6 @@ impl Application for App {
 
         let mut app = App {
             core,
-            nav_bar_context_id: segmented_button::Entity::null(),
             nav_model: segmented_button::ModelBuilder::default().build(),
             tab_model1: segmented_button::ModelBuilder::default().build(),
             tab_model2: segmented_button::ModelBuilder::default().build(),
@@ -2973,18 +2878,10 @@ impl Application for App {
             windows: HashMap::new(),
             nav_dnd_hover: None,
             nav_dnd_hover_right: None,
-            tab_dnd_hover: None,
+
             tab_dnd_hover_left: None,
             tab_dnd_hover_right: None,
-            panegrid_drag_id: DragId::new(),
-            term_drag_id: DragId::new(),
-            nav_drag_id: DragId::new(),
-            tab_drag_id_left: DragId::new(),
-            tab_drag_id_right: DragId::new(),
-            tab_drag_id_buttons: DragId::new(),
-            dnd_drag_pane: None,
-            dnd_drag_id: None,
-            dnd_action: None,
+            dnd_hover_pane: None,
         };
 
         app.pane_setup(
@@ -3058,7 +2955,7 @@ impl Application for App {
         (app, Task::batch(commands))
     }
 
-    fn nav_bar(&self) -> Option<Element<message::Message<Self::Message>>> {
+    fn nav_bar(&self) -> Option<Element<'_, cosmic::Action<Self::Message>>> {
         if !self.core().nav_bar_active() {
             return None;
         }
@@ -3066,20 +2963,19 @@ impl Application for App {
         let nav_model = self.nav_model()?;
 
         let mut nav = cosmic::widget::nav_bar(nav_model, |entity| {
-            cosmic::app::Message::Cosmic(cosmic::app::cosmic::Message::NavBar(entity))
+            cosmic::Action::Cosmic(cosmic::app::Action::NavBar(entity))
         })
-        .drag_id(self.nav_drag_id)
-        .on_dnd_enter(|entity, _| cosmic::app::Message::App(Message::DndEnterNav(entity)))
-        .on_dnd_leave(|_| cosmic::app::Message::App(Message::DndExitNav))
+        .on_dnd_enter(|entity, _| cosmic::Action::App(Message::DndEnterNav(entity)))
+        .on_dnd_leave(|_| cosmic::Action::App(Message::DndExitNav))
         .on_dnd_drop(|entity, data, action| {
-            cosmic::app::Message::App(Message::DndDropNav(entity, data, action))
+            cosmic::Action::App(Message::DndDropNav(entity, data, action))
         })
-        .on_context(|entity| cosmic::app::Message::App(Message::NavBarContext(entity)))
-        .on_close(|entity| cosmic::app::Message::App(Message::NavBarClose(entity)))
+        .on_context(|entity| cosmic::Action::App(Message::NavBarContext(entity)))
+        .on_close(|entity| cosmic::Action::App(Message::NavBarClose(entity)))
         .on_middle_press(|entity| {
-            cosmic::app::Message::App(Message::NavMenuAction(NavMenuAction::OpenInNewTab(entity)))
+            cosmic::Action::App(Message::NavMenuAction(NavMenuAction::OpenInNewTab(entity)))
         })
-        .context_menu(self.nav_context_menu(self.nav_bar_context_id))
+        .context_menu(self.nav_context_menu())
         .close_icon(
             widget::icon::from_name("media-eject-symbolic")
                 .size(16)
@@ -3097,72 +2993,10 @@ impl Application for App {
         ))
     }
 
-    fn nav_context_menu(
-        &self,
-        entity: widget::nav_bar::Id,
-    ) -> Option<Vec<widget::menu::Tree<cosmic::app::Message<Self::Message>>>> {
-        let favorite_index_opt = self.nav_model.data::<FavoriteIndex>(entity);
-        let location_opt = self.nav_model.data::<Location1>(entity);
-        if self.active_panel == PaneType::RightPane && location_opt.is_some() {
-            let location_opt2;
-            if let Some(path) = location_opt.unwrap().path_opt() {
-                location_opt2 = Some(Location2::Path(path.to_owned()));
-            } else {
-                location_opt2 = None;
-            }
-            let mut items = Vec::new();
-
-            if location_opt2
-                .as_ref()
-                .and_then(|x| x.path_opt())
-                .map_or(false, |x| x.is_file())
-            {
-                items.push(cosmic::widget::menu::Item::Button(
-                    fl!("open"),
-                    None,
-                    NavMenuAction::Open(entity),
-                ));
-                items.push(cosmic::widget::menu::Item::Button(
-                    fl!("menu-open-with"),
-                    None,
-                    NavMenuAction::OpenWith(entity),
-                ));
-            } else {
-                items.push(cosmic::widget::menu::Item::Button(
-                    fl!("open-in-new-tab"),
-                    None,
-                    NavMenuAction::OpenInNewTab(entity),
-                ));
-                items.push(cosmic::widget::menu::Item::Button(
-                    fl!("open-in-new-window"),
-                    None,
-                    NavMenuAction::OpenInNewWindow(entity),
-                ));
-            }
-            items.push(cosmic::widget::menu::Item::Divider);
-            items.push(cosmic::widget::menu::Item::Button(
-                fl!("show-details"),
-                None,
-                NavMenuAction::Preview(entity),
-            ));
-            items.push(cosmic::widget::menu::Item::Divider);
-            if favorite_index_opt.is_some() {
-                items.push(cosmic::widget::menu::Item::Button(
-                    fl!("remove-from-sidebar"),
-                    None,
-                    NavMenuAction::RemoveFromSidebar(entity),
-                ));
-            }
-            if matches!(location_opt, Some(Location1::Trash)) {
-                items.push(cosmic::widget::menu::Item::Button(
-                    fl!("empty-trash"),
-                    None,
-                    NavMenuAction::EmptyTrash,
-                ));
-            }
-
-            Some(cosmic::widget::menu::items(&HashMap::new(), items))
-        } else {
+    fn nav_context_menu(&self) -> Option<Vec<widget::menu::Tree<cosmic::Action<Self::Message>>>> {
+        let items = self.nav_model.iter().map(|entity| {
+            let favorite_index_opt = self.nav_model.data::<FavoriteIndex>(entity);
+            let location_opt = self.nav_model.data::<Location1>(entity);
             let mut items = Vec::new();
 
             if location_opt
@@ -3213,8 +3047,10 @@ impl Application for App {
                 ));
             }
 
-            Some(cosmic::widget::menu::items(&HashMap::new(), items))
-        }
+            items
+        });
+
+        Some(cosmic::widget::menu::nav_context(&HashMap::new(), items.collect()))
     }
 
     fn nav_model(&self) -> Option<&segmented_button::SingleSelectModel> {
@@ -3243,7 +3079,7 @@ impl Application for App {
 
         if let Some(data) = self.nav_model.data::<MounterData>(entity) {
             if let Some(mounter) = MOUNTERS.get(&data.0) {
-                return mounter.mount(data.1.clone()).map(|_| message::none());
+                return mounter.mount(data.1.clone()).map(|_| cosmic::action::none());
             }
         }
         Task::none()
@@ -3282,7 +3118,7 @@ impl Application for App {
         // of closing everything on one press
         if self.core.window.show_context {
             self.set_show_context(false);
-            return cosmic::task::message(app::Message::App(Message::SetShowDetails(false)));
+            return cosmic::task::message(cosmic::Action::App(Message::SetShowDetails(false)));
         }
         if self.search_get().is_some() {
             // Close search if open
@@ -3481,7 +3317,7 @@ impl Application for App {
                     saveactive = PaneType::LeftPane;
                     if let Some(tab) = self.tab_model1.data_mut::<Tab1>(entity) {
                         let location = tab.location.clone();
-                        let newlocation = convert_location1_to_location2(&location);
+                        let newlocation = location;
                         // create a new tab in the other panel
                         self.active_panel = tempactive;
                         let _ = self.update(Message::TabCreateRight(Some(newlocation.clone())));
@@ -3498,7 +3334,7 @@ impl Application for App {
                         let location = tab.location.clone();
                         // create a new tab in the other panel
                         self.active_panel = tempactive;
-                        let newlocation = convert_location2_to_location1(&location);
+                        let newlocation = location;
                         let _ = self.update(Message::TabCreateLeft(Some(newlocation.clone())));
                         let _ = self.update_title();
                         let _ = self.update_watcher_left();
@@ -3557,7 +3393,7 @@ impl Application for App {
 
                 let (id, command) = window::open(settings);
                 self.windows.insert(id, WindowKind::DesktopViewOptions);
-                return command.map(|_id| message::none());
+                return command.map(|_id| cosmic::action::none());
             }
             Message::DialogCancel => {
                 self.dialog_pages.pop_front();
@@ -3606,7 +3442,7 @@ impl Application for App {
                             error: _,
                         } => {
                             if let Some(mounter) = MOUNTERS.get(&mounter_key) {
-                                return mounter.mount(item).map(|_| message::none());
+                                return mounter.mount(item).map(|_| cosmic::action::none());
                             }
                         }
                         DialogPage::NetworkAuth {
@@ -3618,7 +3454,7 @@ impl Application for App {
                             return Task::perform(
                                 async move {
                                     auth_tx.send(auth).await.unwrap();
-                                    message::none()
+                                    cosmic::action::none()
                                 },
                                 |x| x,
                             );
@@ -3732,6 +3568,7 @@ impl Application for App {
                     ));
                 }
             }
+            #[cfg(feature = "desktop")]
             Message::ExecEntryAction(entity_opt, action) => {
                 if self.active_panel == PaneType::LeftPane {
                     return self.update(Message::TabMessage(
@@ -3965,7 +3802,7 @@ impl Application for App {
                         == self.pane_model.pane_by_type[&PaneType::TerminalPane]
                 {
                     for (key_bind, action) in &self.key_binds_terminal {
-                        if key_bind.matches(modifiers, &key) {
+                        if key_bind.matches(modifiers, &key, None) {
                             return self.update(action.message(None));
                         }
                     }
@@ -3977,7 +3814,7 @@ impl Application for App {
                         entity = self.tab_model2.active();
                     }
                     for (key_bind, action) in self.key_binds.iter() {
-                        if key_bind.matches(modifiers, &key) {
+                        if key_bind.matches(modifiers, &key, None) {
                             return self.update(action.message(Some(entity)));
                         }
                     }
@@ -4019,7 +3856,7 @@ impl Application for App {
                     saveactive = PaneType::RightPane;
                     if let Some(tab) = self.tab_model1.data_mut::<Tab1>(entity) {
                         let location = tab.location.clone();
-                        let newlocation = convert_location1_to_location2(&location);
+                        let newlocation = location;
                         // create a new tab in the other panel
                         self.active_panel = tempactive;
                         let _ = self.update(Message::TabCreateRight(Some(newlocation.clone())));
@@ -4037,7 +3874,7 @@ impl Application for App {
                         let location = tab.location.clone();
                         // create a new tab in the other panel
                         self.active_panel = tempactive;
-                        let newlocation = convert_location2_to_location1(&location);
+                        let newlocation = location;
                         let _ = self.update(Message::TabCreateLeft(Some(newlocation.clone())));
                         let _ = self.update_title();
                         let _ = self.update_watcher_left();
@@ -4210,17 +4047,21 @@ impl Application for App {
             }
             Message::NetworkDriveSubmit => {
                 //TODO: know which mounter to use for network drives
-                for (mounter_key, mounter) in MOUNTERS.iter() {
-                    self.network_drive_connecting =
-                        Some((*mounter_key, self.network_drive_input.clone()));
-                    return mounter
-                        .network_drive(self.network_drive_input.clone())
-                        .map(|_| message::none());
+                match MOUNTERS.iter().next() {
+                    Some((mounter_key, mounter)) => {
+                        self.network_drive_connecting =
+                            Some((*mounter_key, self.network_drive_input.clone()));
+                        return mounter
+                            .network_drive(self.network_drive_input.clone())
+                            .map(|_| cosmic::action::none());
+                    }
+                    None => {
+                        log::warn!(
+                            "no mounter found for connecting to {:?}",
+                            self.network_drive_input
+                        );
+                    }
                 }
-                log::warn!(
-                    "no mounter found for connecting to {:?}",
-                    self.network_drive_input
-                );
             }
             Message::NetworkResult(mounter_key, uri, res) => {
                 if self.network_drive_connecting == Some((mounter_key, uri.clone())) {
@@ -4799,9 +4640,9 @@ impl Application for App {
                             return clipboard::read_data::<ClipboardPaste>().map(
                                 move |contents_opt| match contents_opt {
                                     Some(contents) => {
-                                        message::app(Message::PasteContents(to.clone(), contents))
+                                        cosmic::action::app(Message::PasteContents(to.clone(), contents))
                                     }
-                                    None => message::none(),
+                                    None => cosmic::action::none(),
                                 },
                             );
                         }
@@ -4813,9 +4654,9 @@ impl Application for App {
                             return clipboard::read_data::<ClipboardPaste>().map(
                                 move |contents_opt| match contents_opt {
                                     Some(contents) => {
-                                        message::app(Message::PasteContents(to.clone(), contents))
+                                        cosmic::action::app(Message::PasteContents(to.clone(), contents))
                                     }
-                                    None => message::none(),
+                                    None => cosmic::action::none(),
                                 },
                             );
                         }
@@ -4824,20 +4665,20 @@ impl Application for App {
             }
             Message::PastePrimary(_entity_opt) => {
                 return clipboard::read_primary().map(move |value_opt| match value_opt {
-                    Some(value) => message::app(Message::PasteValueTerminal(value)),
-                    None => message::none(),
+                    Some(value) => cosmic::action::app(Message::PasteValueTerminal(value)),
+                    None => cosmic::action::none(),
                 });
             }
             Message::PasteTerminal(_entity_opt) => {
                 return clipboard::read_primary().map(move |value_opt| match value_opt {
-                    Some(value) => message::app(Message::PasteValueTerminal(value)),
-                    None => message::none(),
+                    Some(value) => cosmic::action::app(Message::PasteValueTerminal(value)),
+                    None => cosmic::action::none(),
                 });
             }
             Message::PastePrimaryTerminal(_entity_opt) => {
                 return clipboard::read_primary().map(move |value_opt| match value_opt {
-                    Some(value) => message::app(Message::PasteValueTerminal(value)),
-                    None => message::none(),
+                    Some(value) => cosmic::action::app(Message::PasteValueTerminal(value)),
+                    None => cosmic::action::none(),
                 });
             }
             Message::PasteValueTerminal(value) => {
@@ -4893,7 +4734,7 @@ impl Application for App {
                                                 Message::UndoTrash(tid, paths.clone())
                                             }),
                                     )
-                                    .map(cosmic::app::Message::App),
+                                    .map(cosmic::Action::App),
                             );
                         }
                     }
@@ -4991,7 +4832,7 @@ impl Application for App {
                                     id,
                                     WindowKind::Preview1(
                                         entity_opt,
-                                        PreviewKind::Location1(Location1::Path(path)),
+                                        PreviewKind::Location(Location1::Path(path)),
                                     ),
                                 );
                             } else {
@@ -4999,11 +4840,11 @@ impl Application for App {
                                     id,
                                     WindowKind::Preview2(
                                         entity_opt,
-                                        PreviewKind::Location2(Location2::Path(path)),
+                                        PreviewKind::Location(Location2::Path(path)),
                                     ),
                                 );
                             }
-                            commands.push(command.map(|_id| message::none()));
+                            commands.push(command.map(|_id| cosmic::action::none()));
                         }
                         return Task::batch(commands);
                     }
@@ -5118,7 +4959,7 @@ impl Application for App {
                             return Task::perform(
                                 async move {
                                     let _ = tx.send(replace_result).await;
-                                    message::none()
+                                    cosmic::action::none()
                                 },
                                 |x| x,
                             );
@@ -5127,7 +4968,7 @@ impl Application for App {
                             return Task::perform(
                                 async move {
                                     let _ = tx.send(replace_result).await;
-                                    message::none()
+                                    cosmic::action::none()
                                 },
                                 |x| x,
                             );
@@ -5336,7 +5177,7 @@ impl Application for App {
                     self.tab_model2.activate(entity);
                     self.active_panel = PaneType::RightPane;
                     if let Some(tab) = self.tab_model2.data::<Tab2>(entity) {
-                        self.activate_nav_model_location_right(&tab.location.clone());
+                        self.activate_nav_model_location_left(&tab.location.clone());
                     }
                 }
                 return self.update_title();
@@ -5511,7 +5352,7 @@ impl Application for App {
                         if self.tab_model2.activate_position(new_position) {
                             if let Some(new_entity) = self.tab_model2.entity_at(new_position) {
                                 if let Some(tab) = self.tab_model2.data::<Tab2>(new_entity) {
-                                    self.activate_nav_model_location_right(&tab.location.clone());
+                                    self.activate_nav_model_location_left(&tab.location.clone());
                                 }
                             }
                         }
@@ -5580,7 +5421,7 @@ impl Application for App {
                     if self.tab_model2.activate_position(new_position) {
                         if let Some(new_entity) = self.tab_model2.entity_at(new_position) {
                             if let Some(tab) = self.tab_model2.data::<Tab2>(new_entity) {
-                                self.activate_nav_model_location_right(&tab.location.clone());
+                                self.activate_nav_model_location_left(&tab.location.clone());
                             }
                         }
                     }
@@ -5733,7 +5574,7 @@ impl Application for App {
                         tab1::Command::Iced(iced_command) => {
                             commands.push(
                                 iced_command.0.map(move |x| {
-                                    message::app(Message::TabMessage(Some(entity), x))
+                                    cosmic::action::app(Message::TabMessage(Some(entity), x))
                                 }),
                             );
                         }
@@ -5831,7 +5672,7 @@ impl Application for App {
                             commands.push(self.update_config());
                         }
                         tab2::Command::ChangeLocation(tab_title, tab_path, selection_paths) => {
-                            self.activate_nav_model_location_right(&tab_path);
+                            self.activate_nav_model_location_left(&tab_path);
                             self.tab_model2.text_set(entity, tab_title);
                             commands.push(Task::batch([
                                 self.update_title(),
@@ -5851,7 +5692,7 @@ impl Application for App {
                         }
                         tab2::Command::Iced(iced_command) => {
                             commands.push(iced_command.0.map(move |x| {
-                                message::app(Message::TabMessageRight(Some(entity), x))
+                                cosmic::action::app(Message::TabMessageRight(Some(entity), x))
                             }));
                         }
                         tab2::Command::MoveToTrash(paths) => {
@@ -6004,7 +5845,7 @@ impl Application for App {
                                     //TODO: what to do when data_opt is None?
                                     callback(&data_opt.unwrap_or_default());
                                     // We don't need to do anything else
-                                    message::none()
+                                    cosmic::action::none()
                                 });
                             }
                             term::ClipboardType::Selection => {
@@ -6075,8 +5916,8 @@ impl Application for App {
             Message::TermMiddleClick(_pane, _entity_opt) => {
                 return Task::batch([clipboard::read_primary().map(
                     move |value_opt| match value_opt {
-                        Some(value) => message::app(Message::PasteValueTerminal(value)),
-                        None => message::none(),
+                        Some(value) => cosmic::action::app(Message::PasteValueTerminal(value)),
+                        None => cosmic::action::none(),
                     },
                 )]);
             }
@@ -6097,7 +5938,7 @@ impl Application for App {
                 self.context_page = context_page;
                 // Preview status is preserved across restarts
                 if matches!(self.context_page, ContextPage::Preview(_, _)) {
-                    return cosmic::task::message(app::Message::App(Message::SetShowDetails(
+                    return cosmic::task::message(cosmic::Action::App(Message::SetShowDetails(
                         self.core.window.show_context,
                     )));
                 }
@@ -6151,7 +5992,7 @@ impl Application for App {
                 if let Some(window_id) = self.window_id_opt.take() {
                     return Task::batch([
                         window::close(window_id),
-                        Task::perform(async move { message::app(Message::MaybeExit) }, |x| x),
+                        Task::perform(async move { cosmic::action::app(Message::MaybeExit) }, |x| x),
                     ]);
                 }
             }
@@ -6192,36 +6033,38 @@ impl Application for App {
                             term.set_zoom_adj(0);
                         }
                     }
-                } else {
-                    let entity;
-                    if self.active_panel == PaneType::LeftPane {
-                        entity = self.tab_model1.active();
+                } else if self.active_panel == PaneType::LeftPane {
+                    let entity = self.tab_model1.active();
+                    if let Some(tab) = self.tab_model1.data_mut::<Tab1>(entity) {
                         let mut config = self.config.tab_left;
-                        if let Some(tab) = self.tab_model1.data_mut::<Tab1>(entity) {
-                            match tab.config.view {
-                                tab1::View::List => {
-                                    config.icon_sizes.list = 100.try_into().unwrap()
-                                }
-                                tab1::View::Grid => {
-                                    config.icon_sizes.grid = 100.try_into().unwrap()
-                                }
+                        match tab.config.view {
+                            tab1::View::List => {
+                                tab.config.icon_sizes.list = 100.try_into().unwrap();
+                                config.icon_sizes.list = 100.try_into().unwrap();
+                            }
+                            tab1::View::Grid => {
+                                tab.config.icon_sizes.grid = 100.try_into().unwrap();
+                                config.icon_sizes.grid = 100.try_into().unwrap();
                             }
                         }
-                    } else {
-                        entity = self.tab_model2.active();
-                        let mut config = self.config.tab_left;
-                        if let Some(tab) = self.tab_model2.data_mut::<Tab2>(entity) {
-                            match tab.config.view {
-                                tab2::View::List => {
-                                    config.icon_sizes.list = 100.try_into().unwrap()
-                                }
-                                tab2::View::Grid => {
-                                    config.icon_sizes.grid = 100.try_into().unwrap()
-                                }
-                            }
-                        }
+                        return self.update(Message::TabConfigLeft(config));
                     }
-                    return self.update(Message::TabActivate(entity));
+                } else {
+                    let entity = self.tab_model2.active();
+                    if let Some(tab) = self.tab_model2.data_mut::<Tab2>(entity) {
+                        let mut config = self.config.tab_right;
+                        match tab.config.view {
+                            tab2::View::List => {
+                                tab.config.icon_sizes.list = 100.try_into().unwrap();
+                                config.icon_sizes.list = 100.try_into().unwrap();
+                            }
+                            tab2::View::Grid => {
+                                tab.config.icon_sizes.grid = 100.try_into().unwrap();
+                                config.icon_sizes.grid = 100.try_into().unwrap();
+                            }
+                        }
+                        return self.update(Message::TabConfigRight(config));
+                    }
                 }
             }
             Message::ZoomIn(_entity_opt) => {
@@ -6238,27 +6081,29 @@ impl Application for App {
                         *size = step.try_into().unwrap();
                     }
                 };
-                let entity;
                 if self.active_panel == PaneType::LeftPane {
-                    entity = self.tab_model1.active();
-                    let mut config = self.config.tab_left;
+                    let entity = self.tab_model1.active();
                     if let Some(tab) = self.tab_model1.data_mut::<Tab1>(entity) {
+                        let mut config = self.config.tab_left;
                         match tab.config.view {
-                            tab1::View::List => config.icon_sizes.list = 100.try_into().unwrap(),
-                            tab1::View::Grid => config.icon_sizes.grid = 100.try_into().unwrap(),
+                            tab1::View::List => zoom_in(&mut tab.config.icon_sizes.list, 50, 500),
+                            tab1::View::Grid => zoom_in(&mut tab.config.icon_sizes.grid, 50, 500),
                         }
+                        config.icon_sizes = tab.config.icon_sizes;
+                        return self.update(Message::TabConfigLeft(config));
                     }
                 } else {
-                    entity = self.tab_model2.active();
-                    let mut config = self.config.tab_right;
+                    let entity = self.tab_model2.active();
                     if let Some(tab) = self.tab_model2.data_mut::<Tab2>(entity) {
+                        let mut config = self.config.tab_right;
                         match tab.config.view {
-                            tab2::View::List => zoom_in(&mut config.icon_sizes.list, 50, 500),
-                            tab2::View::Grid => zoom_in(&mut config.icon_sizes.grid, 50, 500),
+                            tab2::View::List => zoom_in(&mut tab.config.icon_sizes.list, 50, 500),
+                            tab2::View::Grid => zoom_in(&mut tab.config.icon_sizes.grid, 50, 500),
                         }
+                        config.icon_sizes = tab.config.icon_sizes;
+                        return self.update(Message::TabConfigRight(config));
                     }
                 }
-                return self.update(Message::TabActivate(entity));
             }
             Message::ZoomOut(_entity_opt) => {
                 let zoom_out = |size: &mut NonZeroU16, min: u16, max: u16| {
@@ -6285,27 +6130,37 @@ impl Application for App {
                         }
                     }
                 } else {
-                    let entity;
                     if self.active_panel == PaneType::LeftPane {
-                        entity = self.tab_model1.active();
-                        let mut config = self.config.tab_left;
+                        let entity = self.tab_model1.active();
                         if let Some(tab) = self.tab_model1.data_mut::<Tab1>(entity) {
+                            let mut config = self.config.tab_left;
                             match tab.config.view {
-                                tab1::View::List => zoom_out(&mut config.icon_sizes.list, 50, 500),
-                                tab1::View::Grid => zoom_out(&mut config.icon_sizes.grid, 50, 500),
+                                tab1::View::List => {
+                                    zoom_out(&mut tab.config.icon_sizes.list, 50, 500)
+                                }
+                                tab1::View::Grid => {
+                                    zoom_out(&mut tab.config.icon_sizes.grid, 50, 500)
+                                }
                             }
+                            config.icon_sizes = tab.config.icon_sizes;
+                            return self.update(Message::TabConfigLeft(config));
                         }
                     } else {
-                        entity = self.tab_model2.active();
-                        let mut config = self.config.tab_right;
+                        let entity = self.tab_model2.active();
                         if let Some(tab) = self.tab_model2.data_mut::<Tab2>(entity) {
+                            let mut config = self.config.tab_right;
                             match tab.config.view {
-                                tab2::View::List => zoom_out(&mut config.icon_sizes.list, 50, 500),
-                                tab2::View::Grid => zoom_out(&mut config.icon_sizes.grid, 50, 500),
+                                tab2::View::List => {
+                                    zoom_out(&mut tab.config.icon_sizes.list, 50, 500)
+                                }
+                                tab2::View::Grid => {
+                                    zoom_out(&mut tab.config.icon_sizes.grid, 50, 500)
+                                }
                             }
+                            config.icon_sizes = tab.config.icon_sizes;
+                            return self.update(Message::TabConfigRight(config));
                         }
                     }
-                    return self.update(Message::TabActivate(entity));
                 }
             }
             Message::DndEnterNav(entity) => {
@@ -6313,7 +6168,7 @@ impl Application for App {
                     self.nav_dnd_hover = Some((location.clone(), Instant::now()));
                     let location = location.clone();
                     return Task::perform(tokio::time::sleep(HOVER_DURATION1), move |_| {
-                        cosmic::app::Message::App(Message::DndHoverLocTimeoutLeft(location.clone()))
+                        cosmic::Action::App(Message::DndHoverLocTimeoutLeft(location.clone()))
                     });
                 }
             }
@@ -6401,25 +6256,25 @@ impl Application for App {
                 if self.active_panel == PaneType::LeftPane {
                     self.tab_dnd_hover_left = Some((entity, Instant::now()));
                     return Task::perform(tokio::time::sleep(HOVER_DURATION1), move |_| {
-                        cosmic::app::Message::App(Message::DndHoverTabTimeout(entity))
+                        cosmic::Action::App(Message::DndHoverTabTimeout(entity))
                     });
                 } else {
                     self.tab_dnd_hover_right = Some((entity, Instant::now()));
                     return Task::perform(tokio::time::sleep(HOVER_DURATION2), move |_| {
-                        cosmic::app::Message::App(Message::DndHoverTabTimeout(entity))
+                        cosmic::Action::App(Message::DndHoverTabTimeout(entity))
                     });
                 }
             }
             Message::DndEnterTabLeft(entity) => {
                 self.tab_dnd_hover_left = Some((entity, Instant::now()));
                 return Task::perform(tokio::time::sleep(HOVER_DURATION1), move |_| {
-                    cosmic::app::Message::App(Message::DndHoverTabTimeout(entity))
+                    cosmic::Action::App(Message::DndHoverTabTimeout(entity))
                 });
             }
             Message::DndEnterTabRight(entity) => {
                 self.tab_dnd_hover_right = Some((entity, Instant::now()));
                 return Task::perform(tokio::time::sleep(HOVER_DURATION2), move |_| {
-                    cosmic::app::Message::App(Message::DndHoverTabTimeout(entity))
+                    cosmic::Action::App(Message::DndHoverTabTimeout(entity))
                 });
             }
             Message::DndExitTab => {
@@ -6444,13 +6299,13 @@ impl Application for App {
                     let entity = self.tab_model1.active();
                     self.tab_dnd_hover_left = Some((entity, Instant::now()));
                     return Task::perform(tokio::time::sleep(HOVER_DURATION1), move |_| {
-                        cosmic::app::Message::App(Message::DndHoverTabTimeout(entity))
+                        cosmic::Action::App(Message::DndHoverTabTimeout(entity))
                     });
                 } else {
                     let entity = self.tab_model2.active();
                     self.tab_dnd_hover_right = Some((entity, Instant::now()));
                     return Task::perform(tokio::time::sleep(HOVER_DURATION2), move |_| {
-                        cosmic::app::Message::App(Message::DndHoverTabTimeout(entity))
+                        cosmic::Action::App(Message::DndHoverTabTimeout(entity))
                     });
                 }
             }
@@ -6476,212 +6331,68 @@ impl Application for App {
                     //let _ = self.update(Message::DndDropTabRight(entity, Some(c), DndAction::Copy));
                 }
             }
-            Message::DndEnterDndDestination(x, y, _v) => {
-                // find out which of the pane is under the mouse
-                //let terminal_pane = self.pane_model.pane_by_type[&PaneType::TerminalPane];
-                self.pane_model.mimes.clear();
-                self.pane_model.mimes.extend(_v.clone());
-                self.pane_model.dnd_pos_x = x;
-                self.pane_model.dnd_pos_y = y;
-                let _point = Point { x, y };
-                let left_pane = self.pane_model.pane_by_type[&PaneType::LeftPane];
-                if self.pane_model.focus == left_pane {
-                    let entity = self.tab_model1.active();
-                    self.tab_dnd_hover = Some((entity, Instant::now()));
-                    return Task::perform(tokio::time::sleep(HOVER_DURATION1), move |_| {
-                        cosmic::app::Message::App(Message::DndHoverTabTimeout(entity))
-                    });
-                } else if self.config.show_second_panel
-                    && self.pane_model.focus == self.pane_model.pane_by_type[&PaneType::RightPane]
-                {
-                    let entity = self.tab_model2.active();
-                    self.tab_dnd_hover = Some((entity, Instant::now()));
-                    return Task::perform(tokio::time::sleep(HOVER_DURATION2), move |_| {
-                        cosmic::app::Message::App(Message::DndHoverTabTimeout(entity))
-                    });
-                } else {
-                    // if it is terminal
-                }
-            }
-            Message::DndExitDndDestination => {
-                self.tab_dnd_hover = None;
-            }
-            Message::DndDropDndDestination(x, y) => {
-                self.tab_dnd_hover = None;
-                let spacing = 5.0;
-                let target = cosmic::iced_core::Point {
-                    x: x as f32,
-                    y: y as f32,
-                };
-                self.pane_model.dnd_pos_x = x;
-                self.pane_model.dnd_pos_y = y;
-                if let Some(wsize) = self.size {
-                    let limits = cosmic::iced::core::layout::Limits::NONE
-                        .min_width(1.0)
-                        .min_height(1.0);
-                    let window_size =
-                        limits.resolve(wsize.width, wsize.height, cosmic::iced_core::Size::ZERO);
-                    let regions = self
-                        .pane_model
-                        .panestates
-                        .layout()
-                        .pane_regions(spacing, window_size);
-                    for (p, rect) in regions {
-                        if rect.contains(target) {
-                            self.dnd_drag_id = Some(self.pane_model.drag_id_by_pane[&p]);
-                            self.dnd_drag_pane = Some(p);
-                        }
-                    }
-                }
-            }
-            Message::DndActionSelectedDestination(action) => {
-                self.dnd_action = Some(action);
-            }
-            Message::DndDropDndDataReceived(name, data) => {
-                let dnd_drop = match crate::dnd::DndDrop::try_from((data, name)) {
-                    Ok(action) => action,
-                    Err(error) => {
-                        log::error!("Failed to turn drag n drop data into usable form: {}", error);
-                        return Task::none();
-                    }
-                };
-                
-                if let Some(drag_id) = self.dnd_drag_id {
-                    let action = match self.dnd_action {
-                        Some(action) => action,
-                        None => DndAction::Copy,
-                    };
-                    let cbkind = match action {
+            Message::DndPaneDrop(opt) => {
+                self.dnd_hover_pane = None;
+                if let Some((pane, drop, action)) = opt {
+                    let kind = match action {
                         DndAction::Move => ClipboardKind::Cut,
                         _ => ClipboardKind::Copy,
                     };
-                    let c = ClipboardPaste {
-                        kind: cbkind,
-                        paths: dnd_drop.paths,
-                    };
-                    if drag_id == self.tab_drag_id_left {
-                        let entity = self.tab_model1.active();
-                        _ = self.update(Message::DndDropTabLeft(entity, Some(c), action));
-                    } else if self.config.show_second_panel && drag_id == self.tab_drag_id_right {
-                        let entity = self.tab_model2.active();
-                        _ = self.update(Message::DndDropTabRight(entity, Some(c), action));
-                    } else {
-                        if c.paths.len() > 0 {
-                            let s = osstr_to_string(c.paths[0].clone().into_os_string());
-                            let _ = self.update(Message::PasteValueTerminal(s));
+                    match pane.id {
+                        PaneType::LeftPane => {
+                            let entity = self.tab_model1.active();
+                            let c = ClipboardPaste {
+                                kind,
+                                paths: drop.paths,
+                            };
+                            let _ = self.update(Message::DndDropTabLeft(entity, Some(c), action));
+                        }
+                        PaneType::RightPane => {
+                            let entity = self.tab_model2.active();
+                            let c = ClipboardPaste {
+                                kind,
+                                paths: drop.paths,
+                            };
+                            let _ = self.update(Message::DndDropTabRight(entity, Some(c), action));
+                        }
+                        PaneType::TerminalPane | PaneType::ButtonPane => {
+                            if !drop.paths.is_empty() {
+                                let s = osstr_to_string(drop.paths[0].clone().into_os_string());
+                                let _ = self.update(Message::PasteValueTerminal(s));
+                            }
                         }
                     }
                 }
             }
-            Message::DndEnterPanegrid(_v) => {
-                // find out which of the pane is under the mouse
-                //let terminal_pane = self.pane_model.pane_by_type[&PaneType::TerminalPane];
-                let left_pane = self.pane_model.pane_by_type[&PaneType::LeftPane];
-                if self.pane_model.focus == left_pane {
-                    let entity = self.tab_model1.active();
-                    self.tab_dnd_hover = Some((entity, Instant::now()));
-                    return Task::perform(tokio::time::sleep(HOVER_DURATION1), move |_| {
-                        cosmic::app::Message::App(Message::DndHoverTabTimeout(entity))
-                    });
-                } else if self.config.show_second_panel
-                    && self.pane_model.focus == self.pane_model.pane_by_type[&PaneType::RightPane]
-                {
-                    let entity = self.tab_model2.active();
-                    self.tab_dnd_hover = Some((entity, Instant::now()));
-                    return Task::perform(tokio::time::sleep(HOVER_DURATION2), move |_| {
-                        cosmic::app::Message::App(Message::DndHoverTabTimeout(entity))
-                    });
-                } else {
-                    // if it is terminal
-                }
+            Message::DndPaneHover(pane, hovered) => {
+                // Only ever assign into the field; never read the existing
+                // `Option<Pane>` back out, so no `Pane` is moved out of it.
+                self.dnd_hover_pane = hovered.then_some(pane);
             }
-            Message::DndExitPanegrid => {
-                self.tab_dnd_hover = None;
-                self.pane_model.mimes.clear();
-                self.pane_model.dnd_action = None;
-                self.pane_model.dnd_pane = None;
-                self.pane_model.dnd_pane_id = None;
-                self.pane_model.dnd_pos_x = 0.0;
-                self.pane_model.dnd_pos_y = 0.0;
-            }
-            Message::DndDropPanegrid(drag_opt, data, action) => {
-                self.tab_dnd_hover = None;
-                if drag_opt.is_none() {
-                    return Task::none();
-                }
-                let drag_id = drag_opt.unwrap();
-                if drag_id == self.tab_drag_id_left {
-                    let entity = self.tab_model1.active();
-                    _ = self.update(Message::DndDropTabLeft(entity, data, action));
-                } else if self.config.show_second_panel && drag_id == self.tab_drag_id_right {
-                    let entity = self.tab_model2.active();
-                    _ = self.update(Message::DndDropTabRight(entity, data, action));
-                } else {
-                    if let Some(drop) = data {
-                        if drop.paths.len() > 0 {
-                            let s = osstr_to_string(drop.paths[0].clone().into_os_string());
-                            let _ = self.update(Message::PasteValueTerminal(s));
-                        }
-                    }
-                }
-            }
-            Message::DndPaneDrop(opt) => match opt {
-                None => {}
-                Some((pane, drop)) => match pane.id {
-                    PaneType::LeftPane => {
-                        let entity = self.tab_model1.active();
-                        let c = ClipboardPaste {
-                            kind: ClipboardKind::Copy,
-                            paths: drop.paths,
-                        };
-                        let _ =
-                            self.update(Message::DndDropTabLeft(entity, Some(c), DndAction::Copy));
-                    }
-                    PaneType::RightPane => {
-                        let entity = self.tab_model2.active();
-                        let c = ClipboardPaste {
-                            kind: ClipboardKind::Copy,
-                            paths: drop.paths,
-                        };
-                        let _ =
-                            self.update(Message::DndDropTabRight(entity, Some(c), DndAction::Copy));
-                    }
-                    PaneType::TerminalPane => {
-                        if drop.paths.len() > 0 {
-                            let s = osstr_to_string(drop.paths[0].clone().into_os_string());
-                            let _ = self.update(Message::PasteValueTerminal(s));
-                        }
-                    }
-                    PaneType::ButtonPane => {
-                        if drop.paths.len() > 0 {
-                            let s = osstr_to_string(drop.paths[0].clone().into_os_string());
-                            let _ = self.update(Message::PasteValueTerminal(s));
-                        }
-                    }
-                },
-            },
-            Message::DndDropWindow(path) => {
+            Message::DndDropWindow(paths) => {
                 if self.config.show_embedded_terminal
                     && self.pane_model.focus
                         == self.pane_model.pane_by_type[&PaneType::TerminalPane]
                 {
                     // Terminal is active
-                    let s = osstr_to_string(path.clone().into_os_string());
+                    let s = paths
+                        .iter()
+                        .map(|path| osstr_to_string(path.as_os_str().to_os_string()))
+                        .collect::<Vec<_>>()
+                        .join(" ");
                     let _ = self.update(Message::PasteValueTerminal(s));
                 } else if self.active_panel == PaneType::LeftPane {
                     let entity = self.tab_model1.active();
-                    let v = vec![path];
                     let c = ClipboardPaste {
                         kind: ClipboardKind::Copy,
-                        paths: v,
+                        paths,
                     };
                     let _ = self.update(Message::DndDropTabLeft(entity, Some(c), DndAction::Copy));
                 } else {
                     let entity = self.tab_model1.active();
-                    let v = vec![path];
                     let c = ClipboardPaste {
                         kind: ClipboardKind::Copy,
-                        paths: v,
+                        paths,
                     };
                     let _ = self.update(Message::DndDropTabRight(entity, Some(c), DndAction::Copy));
                 }
@@ -6764,13 +6475,13 @@ impl Application for App {
             Message::NavBarClose(entity) => {
                 if let Some(data) = self.nav_model.data::<MounterData>(entity) {
                     if let Some(mounter) = MOUNTERS.get(&data.0) {
-                        return mounter.unmount(data.1.clone()).map(|_| message::none());
+                        return mounter.unmount(data.1.clone()).map(|_| cosmic::action::none());
                     }
                 }
             }
 
             // Tracks which nav bar item to show a context menu for.
-            Message::NavBarContext(entity) => {
+            Message::NavBarContext(_entity) => {
                 // Close location editing if enabled
                 if self.active_panel == PaneType::LeftPane {
                     let tab_entity = self.tab_model1.active();
@@ -6783,7 +6494,6 @@ impl Application for App {
                         tab.edit_location = None;
                     }
                 }
-                self.nav_bar_context_id = entity;
             }
             // Applies selected nav bar context menu operation.
             Message::NavMenuAction(action) => match action {
@@ -6826,7 +6536,7 @@ impl Application for App {
                 }
                 NavMenuAction::OpenInNewTab(entity) => {
                     match self.nav_model.data::<Location1>(entity) {
-                        Some(Location1::Path(ref path)) => {
+                        Some(Location1::Path(path)) => {
                             if self.active_panel == PaneType::LeftPane {
                                 return self.open_tab(Location1::Path(path.clone()), false, None);
                             } else {
@@ -6874,7 +6584,7 @@ impl Application for App {
                             Ok(item) => {
                                 self.context_page = ContextPage::Preview(
                                     None,
-                                    PreviewKind::Custom1(PreviewItem1(item)),
+                                    PreviewKind::Custom(PreviewItem(item)),
                                 );
                                 self.set_show_context(true);
                             }
@@ -6942,8 +6652,8 @@ impl Application for App {
                             }
                         };
 
-                        let (entity, command) = self.open_tab_entity(
-                            Location::Desktop(crate::desktop_dir(), display, self.config.desktop),
+                        let (entity, command) = self.open_tab_entity_left(
+                            Location1::Desktop(crate::desktop_dir(), display, self.config.desktop),
                             false,
                             None,
                         );
@@ -6992,7 +6702,7 @@ impl Application for App {
             }
             Message::Cosmic(cosmic) => {
                 // Forward cosmic messages
-                return Task::perform(async move { cosmic }, message::cosmic);
+                return cosmic::task::message(cosmic::Action::Cosmic(cosmic));
             }
             Message::None => {}
             #[cfg(all(feature = "desktop", feature = "wayland"))]
@@ -7035,7 +6745,7 @@ impl Application for App {
         Task::none()
     }
 
-    fn context_drawer(&self) -> Option<context_drawer::ContextDrawer<Message>> {
+    fn context_drawer(&self) -> Option<context_drawer::ContextDrawer<'_, Message>> {
         if !self.core.window.show_context {
             return None;
         }
@@ -7058,7 +6768,7 @@ impl Application for App {
                 } else {
                     text_input = text_input
                         .on_input(Message::NetworkDriveInput)
-                        .on_submit(Message::NetworkDriveSubmit);
+                        .on_submit(|_address| Message::NetworkDriveSubmit);
                     widget::button::standard(fl!("connect")).on_press(Message::NetworkDriveSubmit)
                 };
                 context_drawer::context_drawer(
@@ -7068,7 +6778,7 @@ impl Application for App {
                 .title(fl!("add-network-drive"))
                 .header(text_input)
                 .footer(widget::row::with_children(vec![
-                    widget::horizontal_space().into(),
+                    widget::space::horizontal().into(),
                     button.into(),
                 ]))
             }
@@ -7107,7 +6817,7 @@ impl Application for App {
                             kind.clone(),
                         )),
                     )
-                    .header_actions(actions)
+                    .actions(widget::row::with_children(actions))
                 } else {
                     if let Some(tab) = self.tab_model2.data::<Tab2>(entity) {
                         if let Some(items) = tab.items_opt() {
@@ -7132,7 +6842,7 @@ impl Application for App {
                             kind.clone(),
                         )),
                     )
-                    .header_actions(actions)
+                    .actions(widget::row::with_children(actions))
                 }
             }
             ContextPage::Settings => context_drawer::context_drawer(
@@ -7143,7 +6853,7 @@ impl Application for App {
         })
     }
 
-    fn dialog(&self) -> Option<Element<Message>> {
+    fn dialog(&self) -> Option<Element<'_, Message>> {
         //TODO: should gallery view just be a dialog?
         if self.active_panel == PaneType::LeftPane {
             let entity = self.tab_model1.active();
@@ -7190,6 +6900,11 @@ impl Application for App {
             } => {
                 let mut dialog = widget::dialog().title(fl!("create-archive"));
 
+                let paths = paths.clone();
+                let to = to.clone();
+                let name = name.clone();
+                let password = password.clone();
+
                 let complete_maybe = if name.is_empty() {
                     None
                 } else if name == "." || name == ".." {
@@ -7231,27 +6946,40 @@ impl Application for App {
                         widget::column::with_children(vec![
                             widget::text::body(fl!("file-name")).into(),
                             widget::row::with_children(vec![
-                                widget::text_input("", name.as_str())
+                                widget::text_input("", name.clone())
                                     .id(self.dialog_text_input.clone())
-                                    .on_input(move |name| {
+                                    .on_input({
+                                        let paths = paths.clone();
+                                        let to = to.clone();
+                                        let password = password.clone();
+                                        move |name| {
+                                            Message::DialogUpdate(DialogPage::Compress {
+                                                paths: paths.clone(),
+                                                to: to.clone(),
+                                                name,
+                                                archive_type: *archive_type,
+                                                password: password.clone(),
+                                            })
+                                        }
+                                    })
+                                    .on_submit_maybe(complete_maybe.clone().map(|m| move |_name| m.clone()))
+                                    .into(),
+                                widget::dropdown(archive_types, selected, {
+                                    let (paths, to, name, password) = (
+                                        paths.clone(),
+                                        to.clone(),
+                                        name.clone(),
+                                        password.clone(),
+                                    );
+                                    move |index| {
                                         Message::DialogUpdate(DialogPage::Compress {
                                             paths: paths.clone(),
                                             to: to.clone(),
                                             name: name.clone(),
-                                            archive_type: *archive_type,
+                                            archive_type: archive_types[index],
                                             password: password.clone(),
                                         })
-                                    })
-                                    .on_submit_maybe(complete_maybe.clone())
-                                    .into(),
-                                widget::dropdown(archive_types, selected, move |index| {
-                                    Message::DialogUpdate(DialogPage::Compress {
-                                        paths: paths.clone(),
-                                        to: to.clone(),
-                                        name: name.clone(),
-                                        archive_type: archive_types[index],
-                                        password: password.clone(),
-                                    })
+                                    }
                                 })
                                 .into(),
                             ])
@@ -7268,16 +6996,21 @@ impl Application for App {
                         widget::text::body(fl!("password")).into(),
                         widget::text_input("", password_unwrapped)
                             .password()
-                            .on_input(move |password_unwrapped| {
-                                Message::DialogUpdate(DialogPage::Compress {
-                                    paths: paths.clone(),
-                                    to: to.clone(),
-                                    name: name.clone(),
-                                    archive_type: *archive_type,
-                                    password: Some(password_unwrapped),
-                                })
+                            .on_input({
+                                let paths = paths.clone();
+                                let to = to.clone();
+                                let name = name.clone();
+                                move |password_unwrapped| {
+                                    Message::DialogUpdate(DialogPage::Compress {
+                                        paths: paths.clone(),
+                                        to: to.clone(),
+                                        name: name.clone(),
+                                        archive_type: *archive_type,
+                                        password: Some(password_unwrapped),
+                                    })
+                                }
                             })
-                            .on_submit_maybe(complete_maybe)
+                            .on_submit_maybe(complete_maybe.map(|m| move |_name| m.clone()))
                             .into(),
                     ]));
                 }
@@ -7362,7 +7095,7 @@ impl Application for App {
                                 auth_tx: auth_tx.clone(),
                             })
                         })
-                        .on_submit(Message::DialogComplete);
+                        .on_submit(|_value| Message::DialogComplete);
                     if !id_assigned {
                         input = input.id(self.dialog_text_input.clone());
                         id_assigned = true;
@@ -7384,7 +7117,7 @@ impl Application for App {
                                 auth_tx: auth_tx.clone(),
                             })
                         })
-                        .on_submit(Message::DialogComplete);
+                        .on_submit(|_value| Message::DialogComplete);
                     if !id_assigned {
                         input = input.id(self.dialog_text_input.clone());
                         id_assigned = true;
@@ -7407,7 +7140,7 @@ impl Application for App {
                                 auth_tx: auth_tx.clone(),
                             })
                         })
-                        .on_submit(Message::DialogComplete);
+                        .on_submit(|_value| Message::DialogComplete);
                     if !id_assigned {
                         input = input.id(self.dialog_text_input.clone());
                     }
@@ -7418,7 +7151,7 @@ impl Application for App {
                     //TODO: what should submit do?
                     //TODO: button for showing password
                     controls.push(
-                        widget::checkbox(fl!("remember-password"), *remember)
+                        widget::checkbox(*remember).label(fl!("remember-password"))
                             .on_toggle(move |value| {
                                 Message::DialogUpdate(DialogPage::NetworkAuth {
                                     mounter_key: *mounter_key,
@@ -7543,7 +7276,7 @@ impl Application for App {
                                         dir: *dir,
                                     })
                                 })
-                                .on_submit_maybe(complete_maybe)
+                                .on_submit_maybe(complete_maybe.map(|m| move |_name| m.clone()))
                                 .into(),
                         ])
                         .spacing(space_xxs),
@@ -7576,13 +7309,13 @@ impl Application for App {
                                 } else {
                                     widget::text::body(app.name.to_string()).into()
                                 },
-                                widget::horizontal_space().into(),
+                                widget::space::horizontal().into(),
                                 if *selected == i {
                                     widget::icon::from_name("checkbox-checked-symbolic")
                                         .size(16)
                                         .into()
                                 } else {
-                                    widget::Space::with_width(Length::Fixed(16.0)).into()
+                                    widget::Space::new().width(Length::Fixed(16.0)).into()
                                 },
                             ])
                             .spacing(space_s)
@@ -7683,7 +7416,7 @@ impl Application for App {
                                         dir: *dir,
                                     })
                                 })
-                                .on_submit_maybe(complete_maybe)
+                                .on_submit_maybe(complete_maybe.map(|m| move |_name| m.clone()))
                                 .into(),
                         ])
                         .spacing(space_xxs),
@@ -7713,7 +7446,7 @@ impl Application for App {
                 if *multiple {
                     dialog
                         .control(
-                            widget::checkbox(fl!("apply-to-all"), *apply_to_all).on_toggle(
+                            widget::checkbox(*apply_to_all).label(fl!("apply-to-all")).on_toggle(
                                 |apply_to_all| {
                                     Message::DialogUpdate(DialogPage::Replace1 {
                                         from: from.clone(),
@@ -7770,7 +7503,7 @@ impl Application for App {
                 if *multiple {
                     dialog
                         .control(
-                            widget::checkbox(fl!("apply-to-all"), *apply_to_all).on_toggle(
+                            widget::checkbox(*apply_to_all).label(fl!("apply-to-all")).on_toggle(
                                 |apply_to_all| {
                                     Message::DialogUpdate(DialogPage::Replace2 {
                                         from: from.clone(),
@@ -7830,7 +7563,7 @@ impl Application for App {
         Some(dialog.into())
     }
 
-    fn footer(&self) -> Option<Element<Message>> {
+    fn footer(&self) -> Option<Element<'_, Message>> {
         if self.progress_operations.is_empty() {
             return None;
         }
@@ -7886,7 +7619,7 @@ impl Application for App {
         //TODO: get height from theme?
         let progress_bar_height = Length::Fixed(4.0);
         let progress_bar =
-            widget::progress_bar(0.0..=1.0, total_progress).height(progress_bar_height);
+            widget::progress_bar::determinate_linear(total_progress).girth(progress_bar_height);
 
         let container = widget::layer_container(widget::column::with_children(vec![
             widget::row::with_children(vec![
@@ -7926,14 +7659,14 @@ impl Application for App {
             .align_y(Alignment::Center)
             .into(),
             widget::text::body(title).into(),
-            widget::Space::with_height(space_s).into(),
+            widget::Space::new().height(space_s).into(),
             widget::row::with_children(vec![
                 widget::button::link(fl!("details"))
                     .on_press(Message::ToggleContextPage(ContextPage::EditHistory))
                     .padding(0)
                     .trailing_icon(true)
                     .into(),
-                widget::horizontal_space().into(),
+                widget::space::horizontal().into(),
                 widget::button::standard(fl!("dismiss"))
                     .on_press(Message::PendingDismiss)
                     .into(),
@@ -7947,7 +7680,7 @@ impl Application for App {
         Some(container.into())
     }
 
-    fn header_start(&self) -> Vec<Element<Self::Message>> {
+    fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
         vec![menu::menu_bar(
             self.tab_model1.active_data::<Tab1>(),
             &self.config,
@@ -7955,7 +7688,7 @@ impl Application for App {
         )]
     }
 
-    fn header_end(&self) -> Vec<Element<Self::Message>> {
+    fn header_end(&self) -> Vec<Element<'_, Self::Message>> {
         let mut elements = Vec::with_capacity(2);
 
         if let Some(term) = self.search_get() {
@@ -7991,12 +7724,14 @@ impl Application for App {
     }
 
     /// Creates a view after each update.
-    fn view(&self) -> Element<Self::Message> {
+    fn view(&self) -> Element<'_, Self::Message> {
         let cosmic_theme::Spacing {
-            space_xxs, space_s, ..
+            space_xxs,
+            space_s: _,
+            ..
         } = theme::active().cosmic().spacing;
 
-        let mut pane_grid = PaneGrid::new(
+        let pane_grid = PaneGrid::new(
             &self.pane_model.panestates,
             |pane, tab_model, _is_maximized| {
                 pane_grid::Content::new(cosmic::widget::responsive(move |size| {
@@ -8007,39 +7742,8 @@ impl Application for App {
         .width(Length::Fill)
         .height(Length::Fill)
         .spacing(space_xxs)
-        .on_click(Message::PaneClicked)
-        .drag_id(self.panegrid_drag_id)
-        .on_enter(|x, y, v| Message::DndEnterDndDestination(x, y, v))
-        .on_leave(|| Message::DndExitDndDestination)
-        .on_data_received(|name, data| Message::DndDropDndDataReceived(name, data))
-        .on_action_selected(|action| Message::DndActionSelectedDestination(action))
-        .on_drop(|x, y| Message::DndDropDndDestination(x, y));
-        //.on_dnd_enter(|v| Message::DndEnterPanegrid(v))
-        //.on_dnd_leave(|| Message::DndExitPanegrid)
-        //.on_dnd_drop(|drag_id, data, action| Message::DndDropPanegrid(drag_id, data, action))
-        //.on_resize(space_s, Message::PaneResized);
-        for p in self.pane_model.panes.iter() {
-            pane_grid.panes.push(p.to_owned());
-            pane_grid
-                .drag_id_by_pane
-                .insert(p.to_owned(), self.pane_model.drag_id_by_pane[p]);
-        }
-        pane_grid.panes.extend(self.pane_model.panes.clone());
-        pane_grid.drag_id_by_pane.extend(self.pane_model.drag_id_by_pane.clone());
-        pane_grid.dnd_pane = self.pane_model.dnd_pane.clone();
-        pane_grid.dnd_action = self.pane_model.dnd_action.clone();
-        pane_grid.dnd_pane_id = self.pane_model.dnd_pane_id.clone();
-        pane_grid.dnd_pos_x = self.pane_model.dnd_pos_x;
-        pane_grid.dnd_pos_y = self.pane_model.dnd_pos_y;
-        /*let commander_pane_grid =
-            crate::commanderpanegrid::CommanderDndDestination::new(pane_grid, Vec::new())
-                .drag_id(self.panegrid_drag_id)
-                .on_enter(|x, y, v| Message::DndEnterDndDestination(x, y, v))
-                .on_leave(|| Message::DndExitDndDestination)
-                .on_data_received(|name, data| Message::DndDropDndDataReceived(name, data))
-                .on_action_selected(|action| Message::DndActionSelectedDestination(action))
-                .on_drop(|x, y| Message::DndDropDndDestination(x, y));
-            */
+        .on_click(Message::PaneClicked);
+
         widget::container(Element::new(pane_grid))
             .width(Length::Fill)
             .height(Length::Fill)
@@ -8047,7 +7751,7 @@ impl Application for App {
             .into()
     }
 
-    fn view_window(&self, id: WindowId) -> Element<Self::Message> {
+    fn view_window(&self, id: WindowId) -> Element<'_, Self::Message> {
         let content = match self.windows.get(&id) {
             Some(WindowKind::Desktop(entity)) => {
                 let mut tab_column = widget::column::with_capacity(3);
@@ -8057,7 +7761,7 @@ impl Application for App {
                         Some(tab) => tab
                             .view(&self.key_binds)
                             .map(move |message| Message::TabMessage(Some(entity), message)),
-                        None => widget::vertical_space().into(),
+                        None => widget::space::vertical().into(),
                     };
                     let mut popover = widget::popover(tab_view);
                     if let Some(dialog) = self.dialog() {
@@ -8069,7 +7773,7 @@ impl Application for App {
                         Some(tab) => tab
                             .view(&self.key_binds)
                             .map(move |message| Message::TabMessageRight(Some(entity), message)),
-                        None => widget::vertical_space().into(),
+                        None => widget::space::vertical().into(),
                     };
                     let mut popover = widget::popover(tab_view);
                     if let Some(dialog) = self.dialog() {
@@ -8080,20 +7784,20 @@ impl Application for App {
 
                 // The toaster is added on top of an empty element to ensure that it does not override context menus
                 tab_column =
-                    tab_column.push(widget::toaster(&self.toasts, widget::horizontal_space()));
+                    tab_column.push(widget::toaster(&self.toasts, widget::space::horizontal()));
                 return if let Some(margin) = self.margin.get(&id) {
                     if margin.0 >= 0. || margin.2 >= 0. {
                         tab_column = widget::column::with_children(vec![
-                            vertical_space().height(margin.0).into(),
+                            space::vertical().height(margin.0).into(),
                             tab_column.into(),
-                            vertical_space().height(margin.2).into(),
+                            space::vertical().height(margin.2).into(),
                         ])
                     }
                     if margin.1 >= 0. || margin.3 >= 0. {
                         Element::from(widget::row::with_children(vec![
-                            horizontal_space().width(margin.1).into(),
+                            space::horizontal().width(margin.1).into(),
                             tab_column.into(),
-                            horizontal_space().width(margin.3).into(),
+                            space::horizontal().width(margin.3).into(),
                         ]))
                     } else {
                         tab_column.into()
@@ -8118,9 +7822,10 @@ impl Application for App {
             None => {
                 //TODO: distinct views per monitor in desktop mode
                 return self.view_main().map(|message| match message {
-                    app::Message::App(app) => app,
-                    app::Message::Cosmic(cosmic) => Message::Cosmic(cosmic),
-                    app::Message::None => Message::None,
+                    cosmic::Action::App(app) => app,
+                    cosmic::Action::Cosmic(cosmic) => Message::Cosmic(cosmic),
+                    cosmic::Action::None => Message::None,
+                    cosmic::Action::Surface(_) => Message::None,
                 });
             }
         };
@@ -8134,10 +7839,6 @@ impl Application for App {
 
     fn subscription(&self) -> Subscription<Self::Message> {
         struct ThemeSubscription;
-        struct TerminalEventSubscription;
-        struct WatcherSubscription;
-        struct WatcherSubscriptionRight;
-        struct TrashWatcherSubscription;
 
         let mut subscriptions = vec![
             event::listen_with(|event, status, _window_id| match event {
@@ -8166,13 +7867,13 @@ impl Application for App {
                         }
                         #[cfg(feature = "desktop")]
                         WaylandEvent::OverlapNotify(event) => {
-                            Some(Message::Overlap(event, window_id))
+                            Some(Message::Overlap(event, _window_id))
                         }
                         _ => None,
                     }
                 }
-                Event::Mouse(cosmic::iced_core::mouse::Event::ButtonReleased(
-                    cosmic::iced_core::mouse::Button::Left,
+                Event::Mouse(cosmic::iced::core::mouse::Event::ButtonReleased(
+                    cosmic::iced::core::mouse::Button::Left,
                 )) => Some(Message::CopyPrimary(None)),
                 _ => None,
             }),
@@ -8201,9 +7902,7 @@ impl Application for App {
                 }
                 Message::SystemThemeModeChange(update.config)
             }),
-            Subscription::run_with_id(
-                TypeId::of::<TerminalEventSubscription>(),
-                stream::channel(100, |mut output| async move {
+            Subscription::run(|| stream::channel(100, |mut output: futures::channel::mpsc::Sender<Message>| async move {
                     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
                     output.send(Message::TermEventTx(event_tx)).await.unwrap();
 
@@ -8214,12 +7913,9 @@ impl Application for App {
                             .unwrap();
                     }
 
-                    panic!("terminal event channel closed");
-                }),
-            ),
-            Subscription::run_with_id(
-                TypeId::of::<WatcherSubscription>(),
-                stream::channel(100, |mut output| async move {
+                    log::warn!("terminal event channel closed, ending terminal event stream");
+                })),
+            Subscription::run(|| stream::channel(100, |mut output: futures::channel::mpsc::Sender<Message>| async move {
                     let watcher_res = {
                         let mut output = output.clone();
                         new_debouncer(
@@ -8291,11 +7987,8 @@ impl Application for App {
                     }
 
                     std::future::pending().await
-                }),
-            ),
-            Subscription::run_with_id(
-                TypeId::of::<WatcherSubscriptionRight>(),
-                stream::channel(100, |mut output| async move {
+                })),
+            Subscription::run(|| stream::channel(100, |mut output: futures::channel::mpsc::Sender<Message>| async move {
                     let watcher_res = {
                         let mut output = output.clone();
                         new_debouncer(
@@ -8367,11 +8060,8 @@ impl Application for App {
                     }
 
                     std::future::pending().await
-                }),
-            ),
-            Subscription::run_with_id(
-                TypeId::of::<TrashWatcherSubscription>(),
-                stream::channel(25, |mut output| async move {
+                })),
+            Subscription::run(|| stream::channel(25, |mut output: futures::channel::mpsc::Sender<Message>| async move {
                     let watcher_res = new_debouncer(
                         time::Duration::from_millis(250),
                         Some(time::Duration::from_millis(250)),
@@ -8432,8 +8122,7 @@ impl Application for App {
                     }
 
                     std::future::pending().await
-                }),
-            ),
+                })),
         ];
 
         for (key, mounter) in MOUNTERS.iter() {
@@ -8465,10 +8154,7 @@ impl Application for App {
                 // Handle notification when window is closed and operations are in progress
                 #[cfg(feature = "notify")]
                 {
-                    struct NotificationSubscription;
-                    subscriptions.push(Subscription::run_with_id(
-                        TypeId::of::<NotificationSubscription>(),
-                        stream::channel(1, move |msg_tx| async move {
+                    subscriptions.push(Subscription::run(|| stream::channel(1, move |msg_tx: futures::channel::mpsc::Sender<Message>| async move {
                             let msg_tx = Arc::new(tokio::sync::Mutex::new(msg_tx));
                             tokio::task::spawn_blocking(move || {
                                 match notify_rust::Notification::new()
@@ -8496,8 +8182,8 @@ impl Application for App {
                             .unwrap();
 
                             std::future::pending().await
-                        }),
-                    ));
+                        })),
+                    );
                 }
             }
         }
@@ -8507,8 +8193,7 @@ impl Application for App {
             let id = *id;
             let pending_operation = pending_operation.clone();
             let controller = controller.clone();
-            subscriptions.push(Subscription::run_with_id(
-                id,
+            subscriptions.push(from_recipe(ReadyStream(
                 stream::channel(16, move |msg_tx| async move {
                     let msg_tx = Arc::new(tokio::sync::Mutex::new(msg_tx));
                     match pending_operation.perform(&msg_tx, controller).await {
@@ -8530,7 +8215,8 @@ impl Application for App {
 
                     std::future::pending().await
                 }),
-            ));
+                id,
+            )));
         }
 
         let mut selected_preview = None;

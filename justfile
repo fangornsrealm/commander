@@ -1,25 +1,18 @@
 name := 'commander'
 export APPID := 'eu.fangornsrealm.commander'
-
 rootdir := ''
 prefix := '/usr'
-
 base-dir := absolute_path(clean(rootdir / prefix))
-
 export INSTALL_DIR := base-dir / 'share'
-
 cargo-target-dir := env('CARGO_TARGET_DIR', 'target')
 bin-src := cargo-target-dir / 'release' / name
 bin-dst := base-dir / 'bin' / name
-
 desktop := APPID + '.desktop'
 desktop-src := 'res' / desktop
 desktop-dst := clean(rootdir / prefix) / 'share' / 'applications' / desktop
-
 metainfo := APPID + '.metainfo.xml'
 metainfo-src := 'res' / metainfo
 metainfo-dst := clean(rootdir / prefix) / 'share' / 'metainfo' / metainfo
-
 icons-src := 'res' / 'icons' / 'hicolor'
 icons-dst := clean(rootdir / prefix) / 'share' / 'icons' / 'hicolor'
 
@@ -39,7 +32,7 @@ clean-dist: clean clean-vendor
 
 # Compiles with debug profile
 build-debug *args:
-    cargo build {{args}}
+    cargo build {{ args }}
 
 # Compiles with release profile
 build-release *args: (build-debug '--release' args)
@@ -49,7 +42,7 @@ build-vendored *args: vendor-extract (build-release '--frozen --offline' args)
 
 # Runs a clippy check
 check *args:
-    cargo clippy --all-features {{args}} -- -W clippy::pedantic
+    cargo clippy --all-features {{ args }} -- -W clippy::pedantic
 
 # Runs a clippy check with JSON message format
 check-json: (check '--message-format=json')
@@ -57,56 +50,60 @@ check-json: (check '--message-format=json')
 # Developer target
 dev *args:
     cargo fmt
-    just run {{args}}
+    just run {{ args }}
 
 # Run with debug logs
 run *args:
     cargo build --release
-    env RUST_LOG=cosmic_files=info RUST_BACKTRACE=full {{bin-src}} {{args}}
+    env RUST_LOG=cosmic_files=info RUST_BACKTRACE=full {{ bin-src }} {{ args }}
 
 # Run tests
 test *args:
-    cargo test {{args}}
+    cargo test {{ args }}
+
+# Check i18n translation completeness
+i18n-check:
+    bash scripts/i18n/check_completeness.sh
 
 flamegraph *args:
-    cargo flamegraph --release --bin commander -- --no-daemon {{args}}
+    cargo flamegraph --release --bin commander -- --no-daemon {{ args }}
     xdg-open flamegraph.svg
 
 heaptrack *args:
     #!/usr/bin/env bash
     set -ex
     rm -fv heaptrack.commander.*
-    cargo heaptrack --profile release-with-debug --bin commander -- --no-daemon {{args}}
+    cargo heaptrack --profile release-with-debug --bin commander -- --no-daemon {{ args }}
     zstd -dc < heaptrack.commander.*.raw.zst | /usr/lib/heaptrack/libexec/heaptrack_interpret | zstd -c > heaptrack.commander.zst
     heaptrack_gui heaptrack.commander.zst
 
 # Installs files
 install:
-    install -Dm0755 {{bin-src}} {{bin-dst}}
-    install -Dm0644 {{desktop-src}} {{desktop-dst}}
-    install -Dm0644 {{metainfo-src}} {{metainfo-dst}}
-    for size in `ls {{icons-src}}`; do \
-        install -Dm0644 "{{icons-src}}/$size/apps/{{APPID}}.svg" "{{icons-dst}}/$size/apps/{{APPID}}.svg"; \
+    install -Dm0755 {{ bin-src }} {{ bin-dst }}
+    install -Dm0644 {{ desktop-src }} {{ desktop-dst }}
+    install -Dm0644 {{ metainfo-src }} {{ metainfo-dst }}
+    for size in `ls {{ icons-src }}`; do \
+        install -Dm0644 "{{ icons-src }}/$size/apps/{{ APPID }}.svg" "{{ icons-dst }}/$size/apps/{{ APPID }}.svg"; \
     done
 
 # Uninstalls installed files
 uninstall:
-    rm -f {{bin-dst}}
+    rm -f {{ bin-dst }}
 
 # Installs files locally
 [no-cd]
 install-local:
-    install -Dm0755 {{bin-src}} ~/.local/bin/{{bin-dst}}
-    install -Dm0644 {{desktop-src}} ${XDG_DATA_HOME:-~/.local/share}/{{desktop-dst}}
-    install -Dm0644 {{metainfo-src}} ${XDG_DATA_HOME:-~/.local/share}/{{metainfo-dst}}
-    install -Dm0644 {{icons-src}} ${XDG_DATA_HOME:-~/.local/share}/{{icons-dst}}
+    install -Dm0755 {{ bin-src }} ~/.local/bin/{{ bin-dst }}
+    install -Dm0644 {{ desktop-src }} ${XDG_DATA_HOME:-~/.local/share}/{{ desktop-dst }}
+    install -Dm0644 {{ metainfo-src }} ${XDG_DATA_HOME:-~/.local/share}/{{ metainfo-dst }}
+    install -Dm0644 {{ icons-src }} ${XDG_DATA_HOME:-~/.local/share}/{{ icons-dst }}
 
 # Uninstalls locally installed files
 uninstall-local:
-    rm ~/.local/bin/{{bin-dst}}
-    rm ${XDG_DATA_HOME:-~/.local/share}/{{desktop-dst}}
-    rm ${XDG_DATA_HOME:-~/.local/share}/{{metainfo-dst}}
-    rm ${XDG_DATA_HOME:-~/.local/share}/{{icons-dst}}
+    rm ~/.local/bin/{{ bin-dst }}
+    rm ${XDG_DATA_HOME:-~/.local/share}/{{ desktop-dst }}
+    rm ${XDG_DATA_HOME:-~/.local/share}/{{ metainfo-dst }}
+    rm ${XDG_DATA_HOME:-~/.local/share}/{{ icons-dst }}
 
 # Compiles and packages deb with release profile
 build-deb:
@@ -121,13 +118,12 @@ install-deb:
 [no-cd]
 build-rpm: build-release
     command -v cargo-generate-rpm || cargo install cargo-generate-rpm
-    strip -s {{bin-src}}
+    strip -s {{ bin-src }}
     cargo generate-rpm
 
 [no-cd]
 install-rpm:
     dnf install ./target/generate-rpm/*.rpm
-
 
 # Vendor dependencies locally
 vendor:

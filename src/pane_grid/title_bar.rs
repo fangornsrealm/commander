@@ -1,27 +1,22 @@
-use cosmic::iced::widget::container;
-use cosmic::iced::core::event::{self, Event};
+use crate::pane_grid::controls::Controls;
+use cosmic::iced::core::event::Event;
 use cosmic::iced::core::layout;
 use cosmic::iced::core::mouse;
 use cosmic::iced::core::overlay;
 use cosmic::iced::core::renderer;
 use cosmic::iced::core::widget::Tree;
 use cosmic::iced::core::{
-    self, Clipboard, Element, Layout, Padding, Point, Rectangle, Shell, Size,
-    Vector,
+    self, Clipboard, Element, Layout, Padding, Point, Rectangle, Shell, Size, Vector,
 };
-use crate::pane_grid::controls::Controls;
+use cosmic::iced::widget::container;
 //use crate::pane_grid::core::Widget;
 
 /// The title bar of a [`Pane`].
 ///
 /// [`Pane`]: super::Pane
 #[allow(missing_debug_implementations)]
-pub struct TitleBar<
-    'a,
-    Message,
-    Theme = cosmic::iced::Theme,
-    Renderer = cosmic::iced::Renderer,
-> where
+pub struct TitleBar<'a, Message, Theme = cosmic::iced::Theme, Renderer = cosmic::iced::Renderer>
+where
     Theme: container::Catalog,
     Renderer: core::Renderer,
 {
@@ -38,9 +33,7 @@ where
     Renderer: core::Renderer,
 {
     /// Creates a new [`TitleBar`] with the given content.
-    pub fn new(
-        content: impl Into<Element<'a, Message, Theme, Renderer>>,
-    ) -> Self {
+    pub fn new(content: impl Into<Element<'a, Message, Theme, Renderer>>) -> Self {
         Self {
             content: content.into(),
             controls: None,
@@ -51,10 +44,7 @@ where
     }
 
     /// Sets the controls of the [`TitleBar`].
-    pub fn controls(
-        mut self,
-        controls: impl Into<Controls<'a, Message, Theme, Renderer>>,
-    ) -> Self {
+    pub fn controls(mut self, controls: impl Into<Controls<'a, Message, Theme, Renderer>>) -> Self {
         self.controls = Some(controls.into());
         self
     }
@@ -80,10 +70,7 @@ where
 
     /// Sets the style of the [`TitleBar`].
     #[must_use]
-    pub fn style(
-        mut self,
-        style: impl Fn(&Theme) -> container::Style + 'a,
-    ) -> Self
+    pub fn style(mut self, style: impl Fn(&Theme) -> container::Style + 'a) -> Self
     where
         Theme::Class<'a>: From<container::StyleFn<'a, Theme>>,
     {
@@ -239,11 +226,7 @@ where
     /// [`TitleBar`] or not.
     ///
     /// The whole [`TitleBar`] is a pick area, except its controls.
-    pub fn is_over_pick_area(
-        &self,
-        layout: Layout<'_>,
-        cursor_position: Point,
-    ) -> bool {
+    pub fn is_over_pick_area(&self, layout: Layout<'_>, cursor_position: Point) -> bool {
         if layout.bounds().contains(cursor_position) {
             let mut children = layout.children();
             let padded = children.next().unwrap();
@@ -277,7 +260,7 @@ where
     }
 
     pub(crate) fn layout(
-        &self,
+        &mut self,
         tree: &mut Tree,
         renderer: &Renderer,
         limits: &layout::Limits,
@@ -285,7 +268,7 @@ where
         let limits = limits.shrink(self.padding);
         let max_size = limits.max();
 
-        let title_layout = self.content.as_widget().layout(
+        let title_layout = self.content.as_widget_mut().layout(
             &mut tree.children[0],
             renderer,
             &layout::Limits::new(Size::ZERO, max_size),
@@ -293,26 +276,23 @@ where
 
         let title_size = title_layout.size();
 
-        let node = if let Some(controls) = &self.controls {
-            let controls_layout = controls.full.as_widget().layout(
+        let node = if let Some(controls) = &mut self.controls {
+            let controls_layout = controls.full.as_widget_mut().layout(
                 &mut tree.children[1],
                 renderer,
                 &layout::Limits::new(Size::ZERO, max_size),
             );
 
-            if title_layout.bounds().width + controls_layout.bounds().width
-                > max_size.width
-            {
-                if let Some(compact) = controls.compact.as_ref() {
-                    let compact_layout = compact.as_widget().layout(
+            if title_layout.bounds().width + controls_layout.bounds().width > max_size.width {
+                if let Some(compact) = controls.compact.as_mut() {
+                    let compact_layout = compact.as_widget_mut().layout(
                         &mut tree.children[2],
                         renderer,
                         &layout::Limits::new(Size::ZERO, max_size),
                     );
 
                     let compact_size = compact_layout.size();
-                    let space_before_controls =
-                        max_size.width - compact_size.width;
+                    let space_before_controls = max_size.width - compact_size.width;
 
                     let height = title_size.height.max(compact_size.height);
 
@@ -321,16 +301,12 @@ where
                         vec![
                             title_layout,
                             controls_layout,
-                            compact_layout.move_to(Point::new(
-                                space_before_controls,
-                                0.0,
-                            )),
+                            compact_layout.move_to(Point::new(space_before_controls, 0.0)),
                         ],
                     )
                 } else {
                     let controls_size = controls_layout.size();
-                    let space_before_controls =
-                        max_size.width - controls_size.width;
+                    let space_before_controls = max_size.width - controls_size.width;
 
                     let height = title_size.height.max(controls_size.height);
 
@@ -338,17 +314,13 @@ where
                         Size::new(max_size.width, height),
                         vec![
                             title_layout,
-                            controls_layout.move_to(Point::new(
-                                space_before_controls,
-                                0.0,
-                            )),
+                            controls_layout.move_to(Point::new(space_before_controls, 0.0)),
                         ],
                     )
                 }
             } else {
                 let controls_size = controls_layout.size();
-                let space_before_controls =
-                    max_size.width - controls_size.width;
+                let space_before_controls = max_size.width - controls_size.width;
 
                 let height = title_size.height.max(controls_size.height);
 
@@ -356,8 +328,7 @@ where
                     Size::new(max_size.width, height),
                     vec![
                         title_layout,
-                        controls_layout
-                            .move_to(Point::new(space_before_controls, 0.0)),
+                        controls_layout.move_to(Point::new(space_before_controls, 0.0)),
                     ],
                 )
             }
@@ -372,7 +343,7 @@ where
     }
 
     pub(crate) fn operate(
-        &self,
+        &mut self,
         tree: &mut Tree,
         layout: Layout<'_>,
         renderer: &Renderer,
@@ -385,16 +356,15 @@ where
         let title_layout = children.next().unwrap();
         let mut show_title = true;
 
-        if let Some(controls) = &self.controls {
+        if let Some(controls) = &mut self.controls {
             let controls_layout = children.next().unwrap();
 
-            if title_layout.bounds().width + controls_layout.bounds().width
-                > padded.bounds().width
+            if title_layout.bounds().width + controls_layout.bounds().width > padded.bounds().width
             {
-                if let Some(compact) = controls.compact.as_ref() {
+                if let Some(compact) = controls.compact.as_mut() {
                     let compact_layout = children.next().unwrap();
 
-                    compact.as_widget().operate(
+                    compact.as_widget_mut().operate(
                         &mut tree.children[2],
                         compact_layout,
                         renderer,
@@ -403,7 +373,7 @@ where
                 } else {
                     show_title = false;
 
-                    controls.full.as_widget().operate(
+                    controls.full.as_widget_mut().operate(
                         &mut tree.children[1],
                         controls_layout,
                         renderer,
@@ -411,7 +381,7 @@ where
                     );
                 }
             } else {
-                controls.full.as_widget().operate(
+                controls.full.as_widget_mut().operate(
                     &mut tree.children[1],
                     controls_layout,
                     renderer,
@@ -421,7 +391,7 @@ where
         };
 
         if show_title {
-            self.content.as_widget().operate(
+            self.content.as_widget_mut().operate(
                 &mut tree.children[0],
                 title_layout,
                 renderer,
@@ -430,17 +400,17 @@ where
         }
     }
 
-    pub(crate) fn on_event(
+    pub(crate) fn update(
         &mut self,
         tree: &mut Tree,
-        event: Event,
+        event: &Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
         clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
-    ) -> event::Status {
+    ) {
         let mut children = layout.children();
         let padded = children.next().unwrap();
 
@@ -448,56 +418,53 @@ where
         let title_layout = children.next().unwrap();
         let mut show_title = true;
 
-        let control_status = if let Some(controls) = &mut self.controls {
+        if let Some(controls) = &mut self.controls {
             let controls_layout = children.next().unwrap();
-            if title_layout.bounds().width + controls_layout.bounds().width
-                > padded.bounds().width
+            if title_layout.bounds().width + controls_layout.bounds().width > padded.bounds().width
             {
                 if let Some(compact) = controls.compact.as_mut() {
                     let compact_layout = children.next().unwrap();
 
-                    compact.as_widget_mut().on_event(
+                    compact.as_widget_mut().update(
                         &mut tree.children[2],
-                        event.clone(),
+                        event,
                         compact_layout,
                         cursor,
                         renderer,
                         clipboard,
                         shell,
                         viewport,
-                    )
+                    );
                 } else {
                     show_title = false;
 
-                    controls.full.as_widget_mut().on_event(
+                    controls.full.as_widget_mut().update(
                         &mut tree.children[1],
-                        event.clone(),
+                        event,
                         controls_layout,
                         cursor,
                         renderer,
                         clipboard,
                         shell,
                         viewport,
-                    )
+                    );
                 }
             } else {
-                controls.full.as_widget_mut().on_event(
+                controls.full.as_widget_mut().update(
                     &mut tree.children[1],
-                    event.clone(),
+                    event,
                     controls_layout,
                     cursor,
                     renderer,
                     clipboard,
                     shell,
                     viewport,
-                )
+                );
             }
-        } else {
-            event::Status::Ignored
-        };
+        }
 
-        let title_status = if show_title {
-            self.content.as_widget_mut().on_event(
+        if show_title {
+            self.content.as_widget_mut().update(
                 &mut tree.children[0],
                 event,
                 title_layout,
@@ -506,12 +473,8 @@ where
                 clipboard,
                 shell,
                 viewport,
-            )
-        } else {
-            event::Status::Ignored
-        };
-
-        control_status.merge(title_status)
+            );
+        }
     }
 
     pub(crate) fn mouse_interaction(
@@ -538,28 +501,25 @@ where
 
         if let Some(controls) = &self.controls {
             let controls_layout = children.next().unwrap();
-            let controls_interaction =
-                controls.full.as_widget().mouse_interaction(
-                    &tree.children[1],
-                    controls_layout,
-                    cursor,
-                    viewport,
-                    renderer,
-                );
+            let controls_interaction = controls.full.as_widget().mouse_interaction(
+                &tree.children[1],
+                controls_layout,
+                cursor,
+                viewport,
+                renderer,
+            );
 
-            if title_layout.bounds().width + controls_layout.bounds().width
-                > padded.bounds().width
+            if title_layout.bounds().width + controls_layout.bounds().width > padded.bounds().width
             {
                 if let Some(compact) = controls.compact.as_ref() {
                     let compact_layout = children.next().unwrap();
-                    let compact_interaction =
-                        compact.as_widget().mouse_interaction(
-                            &tree.children[2],
-                            compact_layout,
-                            cursor,
-                            viewport,
-                            renderer,
-                        );
+                    let compact_interaction = compact.as_widget().mouse_interaction(
+                        &tree.children[2],
+                        compact_layout,
+                        cursor,
+                        viewport,
+                        renderer,
+                    );
 
                     compact_interaction.max(title_interaction)
                 } else {
@@ -576,8 +536,9 @@ where
     pub(crate) fn overlay<'b>(
         &'b mut self,
         tree: &'b mut Tree,
-        layout: Layout<'_>,
+        layout: Layout<'b>,
         renderer: &Renderer,
+        viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         let mut children = layout.children();
@@ -596,13 +557,12 @@ where
 
         content
             .as_widget_mut()
-            .overlay(title_state, title_layout, renderer, translation)
+            .overlay(title_state, title_layout, renderer, viewport, translation)
             .or_else(move || {
                 controls.as_mut().and_then(|controls| {
                     let controls_layout = children.next()?;
 
-                    if title_layout.bounds().width
-                        + controls_layout.bounds().width
+                    if title_layout.bounds().width + controls_layout.bounds().width
                         > padded.bounds().width
                     {
                         if let Some(compact) = controls.compact.as_mut() {
@@ -613,6 +573,7 @@ where
                                 compact_state,
                                 compact_layout,
                                 renderer,
+                                viewport,
                                 translation,
                             )
                         } else {
@@ -620,6 +581,7 @@ where
                                 controls_state,
                                 controls_layout,
                                 renderer,
+                                viewport,
                                 translation,
                             )
                         }
@@ -628,6 +590,7 @@ where
                             controls_state,
                             controls_layout,
                             renderer,
+                            viewport,
                             translation,
                         )
                     }

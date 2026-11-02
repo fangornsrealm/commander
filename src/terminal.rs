@@ -35,6 +35,18 @@ use tokio::sync::mpsc;
 
 pub use alacritty_terminal::grid::Scroll as TerminalScroll;
 
+/// Activity on the shell input side, reported to the host application.
+///
+/// The host uses this to tell whether the shell is at a prompt (safe to inject
+/// commands such as `cd`) or busy running a job / with unsubmitted input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellActivity {
+    /// Some input (keystrokes, paste, ...) was written to the shell.
+    Input,
+    /// A carriage return was written to the shell: a command was submitted.
+    Enter,
+}
+
 use crate::mouse_reporter::MouseReporter;
 use crate::pane_grid;
 
@@ -167,6 +179,10 @@ pub struct Terminal {
     pub needs_update: bool,
     //pub profile_id_opt: Option<ProfileId>,
     pub tab_title_override: Option<String>,
+    /// The entity identifying which file-manager panel this terminal belongs to.
+    pub entity: segmented_button::Entity,
+    /// Channel reporting shell input activity ([`ShellActivity`]) to the host.
+    pub activity_tx: Option<mpsc::UnboundedSender<(segmented_button::Entity, ShellActivity)>>,
     pub term: Arc<FairMutex<Term<EventProxy>>>,
     bold_font_weight: Weight,
     buffer: Arc<Buffer>,
@@ -188,6 +204,7 @@ impl Terminal {
         pane: crate::pane_grid::Pane,
         entity: segmented_button::Entity,
         event_tx: mpsc::UnboundedSender<(pane_grid::Pane, segmented_button::Entity, Event)>,
+        activity_tx: Option<mpsc::UnboundedSender<(segmented_button::Entity, ShellActivity)>>,
         config: Config,
         options: Options,
         //app_config: &AppConfig,
@@ -272,6 +289,8 @@ impl Terminal {
             term,
             use_bright_bold,
             zoom_adj: Default::default(),
+            activity_tx,
+            entity,
         })
     }
 
@@ -318,6 +337,13 @@ impl Terminal {
     }
 
     pub fn input_no_scroll<I: Into<Cow<'static, [u8]>>>(&self, input: I) {
+        let input: Cow<'static, [u8]> = input.into();
+        if let Some(tx) = &self.activity_tx {
+            let _ = tx.send((self.entity, ShellActivity::Input));
+            if input.contains(&b'\r') {
+                let _ = tx.send((self.entity, ShellActivity::Enter));
+            }
+        }
         self.notifier.notify(input);
     }
 

@@ -54,6 +54,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{self, Instant},
 };
+use slotmap::KeyData;
 use tokio::sync::mpsc;
 use trash::TrashItem;
 #[cfg(feature = "wayland")]
@@ -76,6 +77,7 @@ use crate::{
     pane_grid::{self, PaneGrid},
     recipe::ReadyStream,
     spawn_detached::spawn_detached,
+    terminal::ShellActivity,
     tab1::{
         self, HeadingOptions as HeadingOptions1, ItemMetadata as ItemMetadata1,
         Location as Location1, Tab as Tab1, HOVER_DURATION as HOVER_DURATION1,
@@ -304,6 +306,30 @@ pub enum PaneType {
     RightPane,
 }
 
+/// How long the shell must be quiet (no input and no output) after a command
+/// was submitted before it is considered back at the prompt.
+///
+/// Used to decide when a pending `cd` (queued while the shell was busy with a
+/// job) can safely be injected.
+const TERM_PROMPT_QUIESCENCE: time::Duration = time::Duration::from_millis(300);
+
+/// Tracks the shell input/output activity of one panel's terminal.
+///
+/// This is used to tell whether the shell is at a prompt (safe to inject
+/// commands such as `cd`) or is busy (a job is running, or the user has
+/// unsubmitted input in the command line).
+#[derive(Default)]
+struct TermPanelState {
+    /// Last input of any kind written to the shell.
+    last_input: Option<Instant>,
+    /// Last command submission (carriage return) written to the shell.
+    last_enter: Option<Instant>,
+    /// Last output received from the shell.
+    last_output: Option<Instant>,
+    /// Directory to move the shell to once it is back at the prompt.
+    pending_cd: Option<PathBuf>,
+}
+
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Pane {
     id: PaneType,
@@ -502,9 +528,16 @@ pub enum Message {
     TermContextMenu(pane_grid::Pane, Option<Point>),
     TermEvent(pane_grid::Pane, Entity, alacritty_terminal::event::Event),
     TermEventTx(mpsc::UnboundedSender<(pane_grid::Pane, Entity, alacritty_terminal::event::Event)>),
+    /// Shell input activity ([`ShellActivity`]) of the terminal with `entity`.
+    TermActivity(Entity, ShellActivity),
+    /// New shell activity channel.
+    TermActivityTx(mpsc::UnboundedSender<(Entity, ShellActivity)>),
     TermMiddleClick(pane_grid::Pane, Option<segmented_button::Entity>),
     TermMouseEnter(pane_grid::Pane),
     TermNew,
+    /// The quiescence timer of the terminal with `entity` has fired; apply a
+    /// pending `cd` if the shell is back at the prompt.
+    TermQuiesce(Entity),
     ToggleContextPage(ContextPage),
     ToggleFoldersFirst,
     ToggleShowHidden(Option<Entity>),
@@ -699,7 +732,15 @@ pub struct App {
     pane_model: crate::commanderpanegrid::CommanderPaneGrid,
     term_event_tx_opt:
         Option<mpsc::UnboundedSender<(pane_grid::Pane, Entity, alacritty_terminal::event::Event)>>,
-    terminal: Option<Mutex<crate::terminal::Terminal>>,
+    term_activity_tx_opt: Option<mpsc::UnboundedSender<(Entity, ShellActivity)>>,
+    /// The terminal of the left panel, if any.
+    terminal_left: Option<Mutex<crate::terminal::Terminal>>,
+    /// The terminal of the right panel, if any.
+    terminal_right: Option<Mutex<crate::terminal::Terminal>>,
+    /// Shell activity tracking for the left panel's terminal.
+    term_state_left: TermPanelState,
+    /// Shell activity tracking for the right panel's terminal.
+    term_state_right: TermPanelState,
     active_panel: PaneType,
     //terminal: Terminal,
     show_button_row: bool,
@@ -982,15 +1023,21 @@ impl App {
         } else {
             entity.id()
         };
-
-        (
-            entity,
-            Task::batch([
-                self.update_title(),
-                self.update_watcher_left(),
-                self.update_tab_left(entity, location, selection_paths),
-            ]),
-        )
+        let cwd = location.path_opt().map(|p| p.to_path_buf());
+        let mut tasks = vec![
+            self.update_title(),
+            self.update_watcher_left(),
+            self.update_tab_left(entity, location, selection_paths),
+        ];
+        // A new active tab was opened; follow it in the terminal of the
+        // left panel
+        if activate {
+            tasks.push(self.sync_terminal_location(
+                Self::term_entity_left(),
+                cwd.as_deref(),
+            ));
+        }
+        (entity, Task::batch(tasks))
     }
 
     fn open_tab_entity_right(
@@ -1022,15 +1069,21 @@ impl App {
         } else {
             entity.id()
         };
-
-        (
-            entity,
-            Task::batch([
-                self.update_title(),
-                self.update_watcher_right(),
-                self.update_tab_right(entity, location, selection_paths),
-            ]),
-        )
+        let cwd = location.path_opt().map(|p| p.to_path_buf());
+        let mut tasks = vec![
+            self.update_title(),
+            self.update_watcher_right(),
+            self.update_tab_right(entity, location, selection_paths),
+        ];
+        // A new active tab was opened; follow it in the terminal of the
+        // right panel
+        if activate {
+            tasks.push(self.sync_terminal_location(
+                Self::term_entity_right(),
+                cwd.as_deref(),
+            ));
+        }
+        (entity, Task::batch(tasks))
     }
 
     fn open_tab(
@@ -2526,7 +2579,7 @@ impl App {
             let mut tab_column = widget::column::with_capacity(1);
             let terminal_id = widget::Id::unique();
             let terminal_pane = self.pane_by_type(PaneType::TerminalPane);
-            if let Some(terminal) = &self.terminal {
+            if let Some(terminal) = self.active_terminal() {
                 let terminal_box = crate::terminal_box::terminal_box(&terminal)
                     .id(terminal_id)
                     .on_context_menu(move |position_opt| {
@@ -2661,12 +2714,156 @@ impl App {
         }
     }
 
-    fn create_and_focus_new_terminal(
+    /// The entity identifying the left panel's terminal on the event channels.
+    fn term_entity_left() -> Entity {
+        Entity::from(KeyData::from_ffi(0))
+    }
+
+    /// The entity identifying the right panel's terminal on the event channels.
+    fn term_entity_right() -> Entity {
+        Entity::from(KeyData::from_ffi(1))
+    }
+
+    fn term_state(&self, entity: Entity) -> &TermPanelState {
+        if entity == Self::term_entity_left() {
+            &self.term_state_left
+        } else {
+            &self.term_state_right
+        }
+    }
+
+    fn term_state_mut(&mut self, entity: Entity) -> &mut TermPanelState {
+        if entity == Self::term_entity_left() {
+            &mut self.term_state_left
+        } else {
+            &mut self.term_state_right
+        }
+    }
+
+    fn terminal_for_entity(
+        &mut self,
+        entity: Entity,
+    ) -> Option<&mut Mutex<crate::terminal::Terminal>> {
+        if entity == Self::term_entity_left() {
+            self.terminal_left.as_mut()
+        } else {
+            self.terminal_right.as_mut()
+        }
+    }
+
+    fn active_terminal(&self) -> Option<&Mutex<crate::terminal::Terminal>> {
+        if self.active_panel == PaneType::LeftPane {
+            self.terminal_left.as_ref()
+        } else {
+            self.terminal_right.as_ref()
+        }
+    }
+
+    fn active_terminal_mut(&mut self) -> Option<&mut Mutex<crate::terminal::Terminal>> {
+        if self.active_panel == PaneType::LeftPane {
+            self.terminal_left.as_mut()
+        } else {
+            self.terminal_right.as_mut()
+        }
+    }
+
+    /// The location of the active tab of the panel owning `entity`, if it has a path.
+    fn active_tab_path(&self, entity: Entity) -> Option<PathBuf> {
+        if entity == Self::term_entity_left() {
+            let tab = self.tab_model1.data::<Tab1>(self.tab_model1.active())?;
+            tab.location.path_opt().map(|p| p.to_path_buf())
+        } else {
+            let tab = self.tab_model2.data::<Tab2>(self.tab_model2.active())?;
+            tab.location.path_opt().map(|p| p.to_path_buf())
+        }
+    }
+
+    /// Whether the shell of the terminal with `entity` is at a prompt, i.e. it
+    /// is safe to inject commands into it.
+    ///
+    /// That means no unsubmitted input (the user is not typing a command) and
+    /// quietness of [`TERM_PROMPT_QUIESCENCE`] since the last input,
+    /// submission, or output.
+    fn term_at_prompt(&self, st: &TermPanelState) -> bool {
+        // Any input after the last submission means a command is being typed
+        if st.last_enter < st.last_input {
+            return false;
+        }
+        // The shell has been quiet since its last activity
+        let last = [st.last_input, st.last_enter, st.last_output]
+            .into_iter()
+            .flatten()
+            .max();
+        match last {
+            Some(last) => Instant::now().duration_since(last) >= TERM_PROMPT_QUIESCENCE,
+            None => true,
+        }
+    }
+
+    /// Injects a `cd` into the terminal owning `entity` and clears its pending directory.
+    fn inject_cd(&mut self, entity: Entity, path: &Path) {
+        if let Some(terminal) = self.terminal_for_entity(entity) {
+            if let Ok(terminal) = terminal.lock() {
+                let lossy = path.to_string_lossy();
+                // NUL bytes cannot occur in valid paths
+                let quoted = shlex::try_quote(&lossy)
+                    .unwrap_or_else(|_| std::borrow::Cow::Owned(format!("'{}'", path.display())));
+                let command = format!("cd {quoted}\r");
+                terminal.input_scroll(command.into_bytes());
+            }
+        }
+        self.term_state_mut(entity).pending_cd = None;
+    }
+
+    /// Moves the terminal of the panel owning `entity` to `path`, spawning a
+    /// new terminal there if the panel has none yet.
+    ///
+    /// If the shell is at a prompt, the `cd` is injected immediately. If the
+    /// shell is busy (running a job or the user is typing), the location is
+    /// queued and applied as soon as the shell is back at a prompt, so a
+    /// running job is never interrupted.
+    fn sync_terminal_location(&mut self, entity: Entity, path: Option<&Path>) -> Task<Message> {
+        let Some(path) = path else {
+            return Task::none();
+        };
+        let has_terminal = if entity == Self::term_entity_left() {
+            self.terminal_left.is_some()
+        } else {
+            self.terminal_right.is_some()
+        };
+        if has_terminal {
+            if self.term_at_prompt(self.term_state(entity)) {
+                self.inject_cd(entity, path);
+            } else {
+                // The shell is busy; apply once it is back at a prompt
+                self.term_state_mut(entity).pending_cd = Some(path.to_path_buf());
+            }
+            return Task::none();
+        }
+        if !self.config.show_embedded_terminal {
+            // The terminal pane is not visible; remember the location for when
+            // the terminal is created.
+            self.term_state_mut(entity).pending_cd = Some(path.to_path_buf());
+            return Task::none();
+        }
+        // Lazily spawn the panel's terminal directly in `path`
+        let pane = self.pane_model.pane_by_type[&PaneType::TerminalPane];
+        let cwd = self
+            .term_state_mut(entity)
+            .pending_cd
+            .take()
+            .or_else(|| Some(path.to_path_buf()));
+        self.create_terminal(pane, entity, cwd)
+    }
+
+    /// Spawns a terminal for the panel owning `entity`, starting its shell in
+    /// `cwd` (if any). Does not change the pane focus.
+    fn create_terminal(
         &mut self,
         pane: pane_grid::Pane,
-        //profile_id_opt: Option<ProfileId>,
+        entity: Entity,
+        cwd: Option<PathBuf>,
     ) -> Task<Message> {
-        self.pane_model.focus = pane;
         match &self.term_event_tx_opt {
             Some(term_event_tx) => {
                 let colors = match self.config.color_scheme_kind() {
@@ -2680,14 +2877,15 @@ impl App {
                 };
                 match colors {
                     Some(colors) => {
-                        let current_pane = pane;
-                        // Use the startup options, profile options, or defaults
-                        let (options, tab_title_override) =
-                            (alacritty_terminal::tty::Options::default(), None);
+                        let options = alacritty_terminal::tty::Options {
+                            working_directory: cwd,
+                            ..Default::default()
+                        };
                         match crate::terminal::Terminal::new(
-                            current_pane,
-                            Entity::default(),
+                            pane,
+                            entity,
                             term_event_tx.clone(),
+                            self.term_activity_tx_opt.clone(),
                             term::Config {
                                 ..Default::default()
                             },
@@ -2695,16 +2893,21 @@ impl App {
                             //&self.config,
                             *colors,
                             //profile_id_opt,
-                            tab_title_override,
+                            None,
                         ) {
                             Ok(terminal) => {
-                                //terminal.set_config(&self.config, &self.themes);
-                                self.terminal = Some(Mutex::new(terminal));
+                                if entity == Self::term_entity_left() {
+                                    self.terminal_left = Some(Mutex::new(terminal));
+                                    self.term_state_left = TermPanelState::default();
+                                } else {
+                                    self.terminal_right = Some(Mutex::new(terminal));
+                                    self.term_state_right = TermPanelState::default();
+                                }
                                 return Task::none();
                             }
                             Err(err) => {
                                 log::error!("failed to open terminal: {}", err);
-                                // Clean up partially created tab
+                                // Clean up partially created terminal
                                 return Task::none();
                             }
                         }
@@ -2716,10 +2919,46 @@ impl App {
                 }
             }
             None => {
-                log::warn!("tried to create new tab before having event channel");
+                log::warn!("tried to create new terminal before having event channel");
                 return Task::none();
             }
         }
+    }
+
+    fn create_and_focus_new_terminal(
+        &mut self,
+        pane: pane_grid::Pane,
+        entity: Entity,
+        cwd: Option<PathBuf>,
+    ) -> Task<Message> {
+        self.pane_model.focus = pane;
+        self.create_terminal(pane, entity, cwd)
+    }
+
+    /// Spawns the initial terminal of the active panel once both terminal
+    /// event channels are available and that panel has no terminal yet.
+    fn maybe_spawn_initial_terminal(&mut self) -> Task<Message> {
+        if self.term_event_tx_opt.is_none() || self.term_activity_tx_opt.is_none() {
+            // One of the two channels is not set up yet; the other handler
+            // will spawn the terminal once it sets its channel.
+            return Task::none();
+        }
+        let entity = if self.active_panel == PaneType::LeftPane {
+            Self::term_entity_left()
+        } else {
+            Self::term_entity_right()
+        };
+        let has_terminal = if entity == Self::term_entity_left() {
+            self.terminal_left.is_some()
+        } else {
+            self.terminal_right.is_some()
+        };
+        if has_terminal {
+            return Task::none();
+        }
+        let pane = self.pane_model.pane_by_type[&PaneType::TerminalPane];
+        let cwd = self.active_tab_path(entity);
+        self.create_and_focus_new_terminal(pane, entity, cwd)
     }
 
     fn update_color_schemes(&mut self) {
@@ -2822,7 +3061,9 @@ impl Application for App {
         //let initial_pane_id= 0;
         //let config = alacritty_terminal::term::Config {..Default::default()};
         let term_event_tx_opt = None;
-        let terminal = None;
+        let term_activity_tx_opt = None;
+        let terminal_left = None;
+        let terminal_right = None;
 
         let mut app = App {
             core,
@@ -2831,7 +3072,11 @@ impl Application for App {
             tab_model2: segmented_button::ModelBuilder::default().build(),
             pane_model,
             term_event_tx_opt,
-            terminal,
+            term_activity_tx_opt,
+            terminal_left,
+            terminal_right,
+            term_state_left: TermPanelState::default(),
+            term_state_right: TermPanelState::default(),
             active_panel: PaneType::LeftPane,
             show_button_row: flags.config.show_button_row,
             show_embedded_terminal: flags.config.show_embedded_terminal,
@@ -3228,7 +3473,7 @@ impl Application for App {
                 return self.update_config();
             }
             Message::ClearScrollback(_entity_opt) => {
-                if let Some(terminalmutex) = &self.terminal.as_mut() {
+                if let Some(terminalmutex) = &self.active_terminal_mut() {
                     if let Ok(terminal) = terminalmutex.lock() {
                         let mut term = terminal.term.lock();
                         term.grid_mut().clear_history();
@@ -3269,7 +3514,7 @@ impl Application for App {
                 return clipboard::write_data(contents);
             }
             Message::CopyTerminal(_entity_opt) => {
-                if let Some(terminal) = self.terminal.as_mut() {
+                if let Some(terminal) = self.active_terminal_mut() {
                     let terminal = terminal.lock().unwrap();
                     let term = terminal.term.lock();
                     if let Some(text) = term.selection_to_string() {
@@ -3280,7 +3525,7 @@ impl Application for App {
                 }
             }
             Message::CopyOrSigint(_entity_opt) => {
-                if let Some(terminalmutex) = self.terminal.as_mut() {
+                if let Some(terminalmutex) = self.active_terminal_mut() {
                     if let Ok(terminal) = terminalmutex.lock() {
                         let term = terminal.term.lock();
                         if let Some(text) = term.selection_to_string() {
@@ -3295,7 +3540,7 @@ impl Application for App {
                 }
             }
             Message::CopyPrimary(_entity_opt) => {
-                if let Some(terminalmutex) = self.terminal.as_mut() {
+                if let Some(terminalmutex) = self.active_terminal_mut() {
                     if let Ok(terminal) = terminalmutex.lock() {
                         let term = terminal.term.lock();
                         if let Some(text) = term.selection_to_string() {
@@ -4299,7 +4544,7 @@ impl Application for App {
                     && self.pane_model.focus
                         == self.pane_model.pane_by_type[&PaneType::TerminalPane]
                 {
-                    if let Some(terminal) = self.terminal.as_mut() {
+                    if let Some(terminal) = self.active_terminal_mut() {
                         if let Ok(mut terminal_ok) = terminal.lock() {
                             //if terminal_ok.needs_update {
                             terminal_ok.update();
@@ -4409,7 +4654,7 @@ impl Application for App {
                     && self.pane_model.focus
                         == self.pane_model.pane_by_type[&PaneType::TerminalPane]
                 {
-                    if let Some(terminal) = self.terminal.as_mut() {
+                    if let Some(terminal) = self.active_terminal_mut() {
                         if let Ok(mut terminal_ok) = terminal.lock() {
                             if terminal_ok.needs_update {
                                 terminal_ok.update();
@@ -4457,7 +4702,7 @@ impl Application for App {
             Message::OpenItemLocation(entity_opt) => {
                 return Task::batch(self.selected_paths(entity_opt).into_iter().filter_map(
                     |path| {
-                        path.parent().map(Path::to_path_buf).map(|parent| {
+                        path.parent().map(|p| p.to_path_buf()).map(|parent| {
                             if self.active_panel == PaneType::LeftPane {
                                 self.open_tab(Location1::Path(parent), true, Some(vec![path]))
                             } else {
@@ -4682,7 +4927,7 @@ impl Application for App {
                 });
             }
             Message::PasteValueTerminal(value) => {
-                if let Some(terminalmutex) = &self.terminal.as_mut() {
+                if let Some(terminalmutex) = &self.active_terminal_mut() {
                     if let Ok(terminal) = terminalmutex.lock() {
                         terminal.paste(value);
                     }
@@ -5117,7 +5362,32 @@ impl Application for App {
             Message::ShowEmbeddedTerminal(show) => {
                 self.config.show_embedded_terminal = show;
                 config_set!(show_embedded_terminal, self.config.show_embedded_terminal);
-                return self.update_config();
+                let mut tasks = vec![self.update_config()];
+                if show {
+                    // Spawn the terminal of the active panel if it does not
+                    // exist yet (e.g. it was never created because the
+                    // terminal pane stayed hidden)
+                    let entity = if self.active_panel == PaneType::LeftPane {
+                        Self::term_entity_left()
+                    } else {
+                        Self::term_entity_right()
+                    };
+                    let has_terminal = if entity == Self::term_entity_left() {
+                        self.terminal_left.is_some()
+                    } else {
+                        self.terminal_right.is_some()
+                    };
+                    if !has_terminal {
+                        let pane = self.pane_model.pane_by_type[&PaneType::TerminalPane];
+                        let cwd = self
+                            .term_state_mut(entity)
+                            .pending_cd
+                            .take()
+                            .or_else(|| self.active_tab_path(entity));
+                        tasks.push(self.create_terminal(pane, entity, cwd));
+                    }
+                }
+                return Task::batch(tasks);
             }
             Message::ShowSecondPanel(show) => {
                 self.config.show_second_panel = show;
@@ -5180,7 +5450,29 @@ impl Application for App {
                         self.activate_nav_model_location_left(&tab.location.clone());
                     }
                 }
-                return self.update_title();
+                // The active tab changed; follow it in the terminal of the
+                // active panel
+                let term_entity = if self.active_panel == PaneType::LeftPane {
+                    Self::term_entity_left()
+                } else {
+                    Self::term_entity_right()
+                };
+                let cwd = if self.active_panel == PaneType::LeftPane {
+                    self.tab_model1
+                        .data::<Tab1>(entity)
+                        .and_then(|tab| tab.location.path_opt())
+                        .map(|p| p.to_path_buf())
+                } else {
+                    self.tab_model2
+                        .data::<Tab2>(entity)
+                        .and_then(|tab| tab.location.path_opt())
+                        .map(|p| p.to_path_buf())
+                };
+                let mut tasks = vec![self.update_title()];
+                if let Some(path) = cwd {
+                    tasks.push(self.sync_terminal_location(term_entity, Some(&path)));
+                }
+                return Task::batch(tasks);
             }
             Message::TabActivateLeft => {
                 self.active_panel = PaneType::LeftPane;
@@ -5555,11 +5847,21 @@ impl Application for App {
                         tab1::Command::ChangeLocation(tab_title, tab_path, selection_paths) => {
                             self.activate_nav_model_location_left(&tab_path);
                             self.tab_model1.text_set(entity, tab_title);
+                            let is_active = entity == self.tab_model1.active();
+                            let cwd = tab_path.path_opt().map(|p| p.to_path_buf());
                             commands.push(Task::batch([
                                 self.update_title(),
                                 self.update_watcher_left(),
                                 self.update_tab_left(entity, tab_path, selection_paths),
                             ]));
+                            // The active tab's location changed; follow it in
+                            // the terminal of the left panel
+                            if is_active {
+                                commands.push(self.sync_terminal_location(
+                                    Self::term_entity_left(),
+                                    cwd.as_deref(),
+                                ));
+                            }
                         }
                         tab1::Command::DropFiles(to, from) => {
                             commands.push(self.update(Message::PasteContents(to, from)));
@@ -5674,11 +5976,21 @@ impl Application for App {
                         tab2::Command::ChangeLocation(tab_title, tab_path, selection_paths) => {
                             self.activate_nav_model_location_left(&tab_path);
                             self.tab_model2.text_set(entity, tab_title);
+                            let is_active = entity == self.tab_model2.active();
+                            let cwd = tab_path.path_opt().map(|p| p.to_path_buf());
                             commands.push(Task::batch([
                                 self.update_title(),
                                 self.update_watcher_right(),
                                 self.update_tab_right(entity, tab_path, selection_paths),
                             ]));
+                            // The active tab's location changed; follow it in
+                            // the terminal of the right panel
+                            if is_active {
+                                commands.push(self.sync_terminal_location(
+                                    Self::term_entity_right(),
+                                    cwd.as_deref(),
+                                ));
+                            }
                         }
                         tab2::Command::DropFiles(to, from) => {
                             commands.push(self.update(Message::PasteContents(to, from)));
@@ -5816,7 +6128,7 @@ impl Application for App {
                 }
             }
             Message::TermContextAction(action) => {
-                if let Some(terminal) = self.terminal.as_mut() {
+                if let Some(terminal) = self.active_terminal_mut() {
                     // Update context menu position
                     let mut terminal = terminal.lock().unwrap();
                     terminal.context_menu = None;
@@ -5826,13 +6138,13 @@ impl Application for App {
             }
             Message::TermContextMenu(_pane, position_opt) => {
                 // Show the context menu on the correct pane / terminal
-                if let Some(terminal) = self.terminal.as_mut() {
+                if let Some(terminal) = self.active_terminal_mut() {
                     // Update context menu position
                     let mut terminal = terminal.lock().unwrap();
                     terminal.context_menu = position_opt;
                 }
             }
-            Message::TermEvent(_pane, _entity, event) => {
+            Message::TermEvent(_pane, entity, event) => {
                 match event {
                     TermEvent::Bell => {
                         //TODO: audible or visible bell options?
@@ -5863,11 +6175,12 @@ impl Application for App {
                         }
                     },
                     TermEvent::ColorRequest(index, f) => {
-                        if let Some(terminal) = &self.terminal {
-                            let terminal = terminal.lock().unwrap();
-                            let rgb = terminal.colors()[index].unwrap_or_default();
-                            let text = f(rgb);
-                            terminal.input_no_scroll(text.into_bytes());
+                        if let Some(terminal) = self.terminal_for_entity(entity) {
+                            if let Ok(terminal) = terminal.lock() {
+                                let rgb = terminal.colors()[index].unwrap_or_default();
+                                let text = f(rgb);
+                                terminal.input_no_scroll(text.into_bytes());
+                            }
                         }
                     }
                     TermEvent::CursorBlinkingChange => {
@@ -5875,43 +6188,89 @@ impl Application for App {
                     }
                     TermEvent::Exit => {}
                     TermEvent::PtyWrite(text) => {
-                        if let Some(terminal) = &self.terminal {
-                            let terminal = terminal.lock().unwrap();
-                            terminal.input_no_scroll(text.into_bytes());
+                        if let Some(terminal) = self.terminal_for_entity(entity) {
+                            if let Ok(terminal) = terminal.lock() {
+                                terminal.input_no_scroll(text.into_bytes());
+                            }
                         }
                     }
                     TermEvent::ResetTitle => {}
                     TermEvent::TextAreaSizeRequest(f) => {
-                        if let Some(terminal) = &self.terminal {
-                            let terminal = terminal.lock().unwrap();
-                            let text = f(terminal.size().into());
-                            terminal.input_no_scroll(text.into_bytes());
+                        if let Some(terminal) = self.terminal_for_entity(entity) {
+                            if let Ok(terminal) = terminal.lock() {
+                                let text = f(terminal.size().into());
+                                terminal.input_no_scroll(text.into_bytes());
+                            }
                         }
                     }
                     TermEvent::Title(_title) => {}
                     TermEvent::MouseCursorDirty | TermEvent::Wakeup => {
-                        if let Some(terminal) = &self.terminal {
-                            let mut terminal = terminal.lock().unwrap();
-                            terminal.needs_update = true;
+                        if let Some(terminal) = self.terminal_for_entity(entity) {
+                            if let Ok(mut terminal) = terminal.lock() {
+                                terminal.needs_update = true;
+                            }
+                        }
+                        let has_pending_cd = self.term_state(entity).pending_cd.is_some();
+                        self.term_state_mut(entity).last_output = Some(Instant::now());
+                        if has_pending_cd {
+                            // The shell just produced output (e.g. the prompt
+                            // after a finished job); check whether it is back
+                            // at the prompt once the output settles.
+                            return Task::perform(
+                                tokio::time::sleep(TERM_PROMPT_QUIESCENCE),
+                                move |_| cosmic::Action::App(Message::TermQuiesce(entity)),
+                            );
                         }
                     }
                     TermEvent::ChildExit(_error_code) => {
-                        //Ignore this for now
+                        // The shell of this panel exited; drop the terminal and
+                        // its activity state. A new terminal is spawned lazily
+                        // on the next navigation or when the terminal pane is
+                        // focused again.
+                        if entity == Self::term_entity_left() {
+                            self.terminal_left = None;
+                            self.term_state_left = TermPanelState::default();
+                        } else {
+                            self.terminal_right = None;
+                            self.term_state_right = TermPanelState::default();
+                        }
+                    }
+                }
+            }
+            Message::TermActivity(entity, activity) => {
+                let st = self.term_state_mut(entity);
+                st.last_input = Some(Instant::now());
+                if matches!(activity, ShellActivity::Enter) {
+                    st.last_enter = Some(Instant::now());
+                }
+            }
+            Message::TermActivityTx(term_activity_tx) => {
+                // Set new shell activity channel
+                self.term_activity_tx_opt = Some(term_activity_tx);
+                return self.maybe_spawn_initial_terminal();
+            }
+            Message::TermQuiesce(entity) => {
+                // The shell output has settled; apply a queued `cd` if the
+                // shell is back at a prompt.
+                if let Some(path) = self.term_state(entity).pending_cd.clone() {
+                    if self.term_at_prompt(self.term_state(entity)) {
+                        self.inject_cd(entity, &path);
                     }
                 }
             }
             Message::TermEventTx(term_event_tx) => {
                 // Set new terminal event channel
                 if self.term_event_tx_opt.is_some() {
-                    // Close tabs using old terminal event channel
-                    log::warn!("terminal event channel reset, closing tabs");
-                    self.terminal = None;
+                    // Close terminals using the old terminal event channel
+                    log::warn!("terminal event channel reset, closing terminals");
+                    self.terminal_left = None;
+                    self.terminal_right = None;
+                    self.term_state_left = TermPanelState::default();
+                    self.term_state_right = TermPanelState::default();
                 }
 
                 self.term_event_tx_opt = Some(term_event_tx);
-
-                // Spawn first tab
-                return self.update(Message::TermNew);
+                return self.maybe_spawn_initial_terminal();
             }
             Message::TermMiddleClick(_pane, _entity_opt) => {
                 return Task::batch([clipboard::read_primary().map(
@@ -5923,10 +6282,41 @@ impl Application for App {
             }
             Message::TermMouseEnter(pane) => {
                 self.pane_model.focus = pane;
+                // Lazily spawn the terminal of the active panel the first time
+                // the terminal pane is focused (e.g. after its shell exited)
+                if pane == self.pane_model.pane_by_type[&PaneType::TerminalPane]
+                    && self.config.show_embedded_terminal
+                {
+                    let entity = if self.active_panel == PaneType::LeftPane {
+                        Self::term_entity_left()
+                    } else {
+                        Self::term_entity_right()
+                    };
+                    let has_terminal = if entity == Self::term_entity_left() {
+                        self.terminal_left.is_some()
+                    } else {
+                        self.terminal_right.is_some()
+                    };
+                    if !has_terminal {
+                        let pane = self.pane_model.pane_by_type[&PaneType::TerminalPane];
+                        let cwd = self
+                            .term_state_mut(entity)
+                            .pending_cd
+                            .take()
+                            .or_else(|| self.active_tab_path(entity));
+                        return self.create_terminal(pane, entity, cwd);
+                    }
+                }
             }
             Message::TermNew => {
                 let pane = self.pane_model.pane_by_type[&PaneType::TerminalPane];
-                return self.create_and_focus_new_terminal(pane);
+                let entity = if self.active_panel == PaneType::LeftPane {
+                    Self::term_entity_left()
+                } else {
+                    Self::term_entity_right()
+                };
+                let cwd = self.active_tab_path(entity);
+                return self.create_and_focus_new_terminal(pane, entity, cwd);
             }
             Message::ToggleContextPage(context_page) => {
                 //TODO: ensure context menus are closed
@@ -6028,7 +6418,7 @@ impl Application for App {
                     && self.pane_model.focus
                         == self.pane_model.pane_by_type[&PaneType::TerminalPane]
                 {
-                    if let Some(terminal) = self.terminal.as_mut() {
+                    if let Some(terminal) = self.active_terminal_mut() {
                         if let Ok(mut term) = terminal.lock() {
                             term.set_zoom_adj(0);
                         }
@@ -6123,7 +6513,7 @@ impl Application for App {
                     && self.pane_model.focus
                         == self.pane_model.pane_by_type[&PaneType::TerminalPane]
                 {
-                    if let Some(terminal) = self.terminal.as_mut() {
+                    if let Some(terminal) = self.active_terminal_mut() {
                         if let Ok(mut term) = terminal.lock() {
                             let cur_val = term.zoom_adj();
                             term.set_zoom_adj(cur_val.saturating_sub(1));
@@ -7914,6 +8304,22 @@ impl Application for App {
                     }
 
                     log::warn!("terminal event channel closed, ending terminal event stream");
+                })),
+            Subscription::run(|| stream::channel(100, |mut output: futures::channel::mpsc::Sender<Message>| async move {
+                    let (activity_tx, mut activity_rx) = mpsc::unbounded_channel();
+                    output
+                        .send(Message::TermActivityTx(activity_tx))
+                        .await
+                        .unwrap();
+
+                    while let Some((entity, activity)) = activity_rx.recv().await {
+                        output
+                            .send(Message::TermActivity(entity, activity))
+                            .await
+                            .unwrap();
+                    }
+
+                    log::warn!("shell activity channel closed, ending shell activity stream");
                 })),
             Subscription::run(|| stream::channel(100, |mut output: futures::channel::mpsc::Sender<Message>| async move {
                     let watcher_res = {

@@ -145,14 +145,40 @@ sibling checkout: `…/libcosmic` next to `…/commander`.
 
 ## Packaging
 
-- `just build-deb` / `just build-rpm` produce distribution packages using
-  `cargo-deb` / `cargo-generate-rpm`; the file lists live in
-  `Cargo.toml` under `[package.metadata.deb]` and `[package.metadata.generate-rpm]`.
-- When adding new resource files (icons, metainfo, desktop entries), update
-  **both** package asset lists and `res/`.
+Distribution formats and their entry points (all are wired into the
+`justfile`; see the README's Packaging section for usage):
+
+| Format   | Recipe          | Tooling                                        | Output                          |
+| -------- | --------------- | ---------------------------------------------- | ------------------------------- |
+| deb      | `just build-deb`   | `cargo-deb` (installed on demand)              | `target/debian/*.deb`           |
+| rpm      | `just build-rpm`   | `cargo-generate-rpm` (installed on demand)     | `target/generate-rpm/*.rpm`     |
+| AppImage | `just appimage`    | `linuxdeploy` (auto-downloaded into `tools/`)  | `Commander-x86_64.AppImage`     |
+| flatpak  | `just flatpak`     | `flatpak` + Sdk 25.08 + rust-stable extension  | `commander-<ver>.flatpak`       |
+| snap     | `just snap`        | `snapcraft` + LXD/KVM                          | `commander_<ver>_amd64.snap`    |
+| docker   | `just docker-build`| `docker`                                       | image `commander:<ver>`         |
+
+Rules of thumb:
+
+- **Resource files**: when adding files under `res/` (icons, metainfo,
+  desktop entries), update **all** of: `[package.metadata.deb]` and
+  `[package.metadata.generate-rpm]` in `Cargo.toml`, the `install` recipe in
+  the `justfile`, the build steps in `scripts/flatpak_build.sh`, the build
+  commands in `snap/snapcraft.yaml`, the `COPY` lines in `docker/Dockerfile`,
+  and the AppImage recipe. Keep the names lowercase — the Flatpak ID and the
+  desktop file name must match.
+- **Versions**: `snap/snapcraft.yaml` carries a hard-coded `version:` that
+  must be kept in sync with `Cargo.toml` (the other formats read it from
+  `Cargo.toml` at build time).
+- The `flatpak/` manifest and the `just flatpak` recipe describe the same
+  build (the local flatpak lacks `build-from-manifest`); update both
+  together.
+- `just vendor` regenerates `vendor.tar`, the self-contained dependency
+  snapshot consumed by the flatpak, snap and docker builds (it also bakes
+  the `vergen` git metadata). Run it whenever `Cargo.toml`/`Cargo.lock`
+  change.
 - The desktop file must keep valid `MimeType=` entries if Commander is to be
-  selectable as a default file manager; run `appstreamcli validate` on
-  `res/eu.fangornsrealm.Commander.metainfo.xml` when editing it.
+  selectable as a default file manager; run `appstreamcli validate` on the
+  metainfo when editing it.
 
 ## Submitting changes
 

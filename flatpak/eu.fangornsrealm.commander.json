@@ -1,0 +1,60 @@
+{
+    "app-id": "eu.fangornsrealm.commander",
+    "runtime": "org.freedesktop.Platform",
+    "runtime-version": "25.08",
+    "sdk": "org.freedesktop.Sdk",
+    "sdk-extensions": [
+        "org.freedesktop.Sdk.Extension.rust-stable"
+    ],
+    "separate-locales": false,
+    "command": "commander",
+    "finish-args": [
+        "--share=ipc",
+        "--share=network",
+        "--socket=x11",
+        "--socket=wayland",
+        "--device=dri",
+        "--filesystem=home",
+        "--talk-name=org.freedesktop.Notifications"
+    ],
+    "modules": [
+        {
+            "name": "commander",
+            "buildsystem": "simple",
+            "sources": [
+                {
+                    "type": "dir",
+                    "path": "..",
+                    "exclude": [
+                        ".git",
+                        ".cargo",
+                        "target",
+                        "vendor.tar",
+                        "vendor-snapshot",
+                        "flatpak/build",
+                        "samples",
+                        "AppDir",
+                        "commander-x86_64.AppImage"
+                    ]
+                },
+                {
+                    "type": "file",
+                    "path": "../vendor.tar"
+                }
+            ],
+            "build-commands": [
+                "tar xf vendor.tar",
+                "CARGO_HOME=\"$(pwd)/.cargo\" /app/rust/stable/bin/cargo build --release --offline --locked",
+                "install -Dm0755 target/release/commander /app/bin/commander",
+                "install -Dm0644 res/eu.fangornsrealm.commander.desktop /app/share/applications/eu.fangornsrealm.commander.desktop",
+                "install -Dm0644 res/eu.fangornsrealm.commander.metainfo.xml /app/share/metainfo/eu.fangornsrealm.commander.metainfo.xml",
+                "install -Dm0644 res/eu.fangornsrealm.commander.svg /app/share/icons/hicolor/scalable/apps/eu.fangornsrealm.commander.svg"
+            ],
+            "cleanup": [
+                "*",
+                "!/bin",
+                "!/share"
+            ]
+        }
+    ]
+}

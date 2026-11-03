@@ -3392,6 +3392,9 @@ impl Tab {
         let location2 = location.clone();
         let location3 = location.clone();
         let is_dnd_hovered = self.dnd_hovered.as_ref().map(|(l, _)| l) == Some(location);
+        let drag_id = 2000u64.wrapping_add(
+            location.to_string().bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64)),
+        );
         let mut container = widget::container(
             DndDestination::for_data::<ClipboardPaste>(element, move |data, action| {
                 if let Some(mut data) = data {
@@ -3408,6 +3411,7 @@ impl Tab {
                     Message::Drop(None)
                 }
             })
+            .drag_id(drag_id)
             .on_enter(move |_, _, _| Message::DndEnter(location2.clone()))
             .on_leave(move || Message::DndLeave(location3.clone())),
         );
@@ -4724,6 +4728,9 @@ impl Tab {
 
         let tab_location_2 = self.location.clone();
         let tab_location_3 = self.location.clone();
+        let drag_id = 3000u64.wrapping_add(
+            self.location.to_string().bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64)),
+        );
         let dnd_dest = DndDestination::for_data(tab_view, move |data, action| {
             if let Some(mut data) = data {
                 if action == DndAction::Copy {
@@ -4739,6 +4746,7 @@ impl Tab {
                 Message::Drop(None)
             }
         })
+        .drag_id(drag_id)
         .on_enter(move |_, _, _| Message::DndEnter(tab_location_2.clone()))
         .on_leave(move || Message::DndLeave(tab_location_3.clone()));
 

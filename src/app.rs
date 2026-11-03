@@ -330,6 +330,93 @@ struct TermPanelState {
     pending_cd: Option<PathBuf>,
 }
 
+/// Whether a terminal is at a prompt based on its shell activity, i.e. it is
+/// safe to inject commands into it.
+///
+/// That means no unsubmitted input (the user is not typing a command) and
+/// quietness of [`TERM_PROMPT_QUIESCENCE`] since the last input,
+/// submission, or output.
+fn term_at_prompt(st: &TermPanelState) -> bool {
+    // Any input after the last submission means a command is being typed
+    if st.last_enter < st.last_input {
+        return false;
+    }
+    // The shell has been quiet since its last activity
+    let last = [st.last_input, st.last_enter, st.last_output]
+        .into_iter()
+        .flatten()
+        .max();
+    match last {
+        Some(last) => Instant::now().duration_since(last) >= TERM_PROMPT_QUIESCENCE,
+        None => true,
+    }
+}
+
+#[cfg(test)]
+mod terminal_state_tests {
+    use super::*;
+
+    fn st(input: bool, enter: bool, output: bool) -> TermPanelState {
+        let now = Instant::now();
+        TermPanelState {
+            last_input: input.then_some(now),
+            last_enter: enter.then_some(now),
+            last_output: output.then_some(now),
+            pending_cd: None,
+        }
+    }
+
+    #[test]
+    fn fresh_terminal_is_at_prompt() {
+        assert!(term_at_prompt(&TermPanelState::default()));
+    }
+
+    #[test]
+    fn unsubmitted_input_blocks_injection() {
+        // The user typed a command but has not pressed enter yet
+        assert!(!term_at_prompt(&st(true, false, false)));
+    }
+
+    #[test]
+    fn running_job_blocks_injection() {
+        // Enter was pressed and the job is still producing output
+        let now = Instant::now();
+        let state = TermPanelState {
+            last_input: Some(now),
+            last_enter: Some(now),
+            last_output: Some(now),
+            pending_cd: None,
+        };
+        assert!(!term_at_prompt(&state));
+    }
+
+    #[test]
+    fn settled_prompt_allows_injection() {
+        let now = Instant::now();
+        let quiet = now - TERM_PROMPT_QUIESCENCE - time::Duration::from_millis(1);
+        let state = TermPanelState {
+            last_input: Some(quiet),
+            last_enter: Some(quiet),
+            last_output: Some(quiet),
+            pending_cd: None,
+        };
+        assert!(term_at_prompt(&state));
+    }
+
+    #[test]
+    fn input_after_last_enter_blocks_injection() {
+        let now = Instant::now();
+        let quiet = now - TERM_PROMPT_QUIESCENCE - time::Duration::from_millis(1);
+        let state = TermPanelState {
+            last_input: Some(now),
+            last_enter: Some(quiet),
+            last_output: Some(quiet),
+            pending_cd: None,
+        };
+        assert!(!term_at_prompt(&state));
+    }
+}
+
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Pane {
     id: PaneType,
@@ -2514,6 +2601,12 @@ impl App {
                 id: pane_type,
                 is_pinned: false,
             };
+            let drag_id = match pane_type {
+                PaneType::LeftPane => 1000,
+                PaneType::RightPane => 1001,
+                PaneType::ButtonPane => 1002,
+                _ => 1003,
+            };
             DndDestination::for_data::<crate::dnd::DndDrop>(tab_column, move |data, action| {
                 match data {
                     Some(drop) if action.intersects(DndAction::Copy | DndAction::Move) => {
@@ -2522,6 +2615,7 @@ impl App {
                     _ => Message::DndPaneDrop(None),
                 }
             })
+            .drag_id(drag_id)
             .on_enter(move |_x, _y, _mimes| Message::DndPaneHover(p, true))
             .on_leave(move || Message::DndPaneHover(p, false))
             .into()
@@ -2617,6 +2711,12 @@ impl App {
                 id: pane_type,
                 is_pinned: false,
             };
+            let drag_id = match pane_type {
+                PaneType::LeftPane => 1000,
+                PaneType::RightPane => 1001,
+                PaneType::ButtonPane => 1002,
+                _ => 1003,
+            };
             DndDestination::for_data::<crate::dnd::DndDrop>(tab_column, move |data, action| {
                 match data {
                     Some(drop) if action.intersects(DndAction::Copy | DndAction::Move) => {
@@ -2625,6 +2725,7 @@ impl App {
                     _ => Message::DndPaneDrop(None),
                 }
             })
+            .drag_id(drag_id)
             .on_enter(move |_x, _y, _mimes| Message::DndPaneHover(p, true))
             .on_leave(move || Message::DndPaneHover(p, false))
             .into()
@@ -2778,28 +2879,6 @@ impl App {
         }
     }
 
-    /// Whether the shell of the terminal with `entity` is at a prompt, i.e. it
-    /// is safe to inject commands into it.
-    ///
-    /// That means no unsubmitted input (the user is not typing a command) and
-    /// quietness of [`TERM_PROMPT_QUIESCENCE`] since the last input,
-    /// submission, or output.
-    fn term_at_prompt(&self, st: &TermPanelState) -> bool {
-        // Any input after the last submission means a command is being typed
-        if st.last_enter < st.last_input {
-            return false;
-        }
-        // The shell has been quiet since its last activity
-        let last = [st.last_input, st.last_enter, st.last_output]
-            .into_iter()
-            .flatten()
-            .max();
-        match last {
-            Some(last) => Instant::now().duration_since(last) >= TERM_PROMPT_QUIESCENCE,
-            None => true,
-        }
-    }
-
     /// Injects a `cd` into the terminal owning `entity` and clears its pending directory.
     fn inject_cd(&mut self, entity: Entity, path: &Path) {
         if let Some(terminal) = self.terminal_for_entity(entity) {
@@ -2832,7 +2911,7 @@ impl App {
             self.terminal_right.is_some()
         };
         if has_terminal {
-            if self.term_at_prompt(self.term_state(entity)) {
+            if term_at_prompt(self.term_state(entity)) {
                 self.inject_cd(entity, path);
             } else {
                 // The shell is busy; apply once it is back at a prompt
@@ -6253,7 +6332,7 @@ impl Application for App {
                 // The shell output has settled; apply a queued `cd` if the
                 // shell is back at a prompt.
                 if let Some(path) = self.term_state(entity).pending_cd.clone() {
-                    if self.term_at_prompt(self.term_state(entity)) {
+                    if term_at_prompt(self.term_state(entity)) {
                         self.inject_cd(entity, &path);
                     }
                 }

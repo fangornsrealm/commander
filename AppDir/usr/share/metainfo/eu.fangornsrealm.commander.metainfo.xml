@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>eu.fangornsrealm.commander</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <project_group>Commander</project_group>
+  <developer_name>fangornsrealm</developer_name>
+  <update_contact>progs@fangornsrealm.eu</update_contact>
+  <url type="homepage">https://github.com/fangornsrealm/commander</url>
+  <url type="bugtracker">https://github.com/fangornsrealm/commander</url>
+  <name>Commander</name>
+  <summary>Norton Commander Clone for the COSMIC desktop</summary>
+  <description>
+    <p>Norton Commander Clone for the COSMIC desktop</p>
+  </description>
+  <launchable type="desktop-id">eu.fangornsrealm.commander.desktop</launchable>
+  <icon type="remote" height="256" width="256">https://raw.githubusercontent.com/fangornsrealm/commander/master/res/icons/hicolor/256x256/apps/eu.fangornsrealm.commander.svg</icon>
+  <provides>
+    <mimetypes>
+      <mimetype>inode/directory</mimetype>
+    </mimetypes>
+    <binaries>
+      <binary>commander</binary>
+    </binaries>
+  </provides>
+</component>

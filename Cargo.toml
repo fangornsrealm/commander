@@ -124,17 +124,17 @@ assets = [
         "755",
     ],
     [
-        "res/eu.fangornsrealm.Commander.desktop",
+        "res/eu.fangornsrealm.commander.desktop",
         "usr/share/applications/",
         "644",
     ],
     [
-        "res/eu.fangornsrealm.Commander.metainfo.xml",
+        "res/eu.fangornsrealm.commander.metainfo.xml",
         "usr/share/metainfo/",
         "644",
     ],
     [
-        "res/eu.fangornsrealm.Commander.svg",
+        "res/eu.fangornsrealm.commander.svg",
         "usr/share/icons/hicolor/scalable/apps/",
         "644",
     ],
@@ -144,9 +144,9 @@ depends = ["libc6", "libxkbcommon0"]
 [package.metadata.generate-rpm]
 assets = [
     { source = "target/release/commander", dest = "/usr/bin/", mode = "755" },
-    { source = "LICENSE", dest = "/usr/share/doc/eu.fangornsrealm.Commander/LICENSE", doc = true, mode = "644" },
-    { source = "res/eu.fangornsrealm.Commander.desktop", dest = "/usr/share/applications/", mode = "644" },
-    { source = "res/eu.fangornsrealm.Commander.svg", dest = "/usr/share/icons/scalable/apps/", mode = "644" },
+    { source = "LICENSE", dest = "/usr/share/doc/eu.fangornsrealm.commander/LICENSE", doc = true, mode = "644" },
+    { source = "res/eu.fangornsrealm.commander.desktop", dest = "/usr/share/applications/", mode = "644" },
+    { source = "res/eu.fangornsrealm.commander.svg", dest = "/usr/share/icons/scalable/apps/", mode = "644" },
 ]
 
 [package.metadata.generate-rpm.requires]

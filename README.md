@@ -36,11 +36,50 @@ cargo run --release
 
 ## Packaging
 
+All formats build from the same release binary and resources, and the
+vendor-based formats (flatpak, snap, docker) work offline and with private
+git dependencies because `just vendor` bakes a self-contained dependency
+snapshot (`vendor.tar`) into the build.
+
 ```sh
-just build-release
-just build-deb       # Debian / Ubuntu .deb
-just build-rpm       # Redhat / Fedora / SUSE .rpm
+just dist          # builds everything below (except docker)
+
+just build-deb     # Debian / Ubuntu .deb        -> target/debian/
+just build-rpm     # Red Hat / Fedora / SUSE     -> target/generate-rpm/
+just appimage      # portable AppImage           -> Commander-x86_64.AppImage
+just flatpak       # Flatpak bundle + repo       -> commander-0.1.0.flatpak
+just snap          # snap package                -> commander_0.1.0_amd64.snap
+just docker-build  # OCI image                   -> docker tag commander:0.1.0
 ```
+
+Per-format notes:
+
+- **deb / rpm** — `cargo-deb` / `cargo-generate-rpm` are installed on demand;
+  the file lists live in `Cargo.toml` under `[package.metadata.deb]` and
+  `[package.metadata.generate-rpm]`.
+- **AppImage** — built with `linuxdeploy` (downloaded into `tools/` on first
+  use). Result is a type-2 AppImage, run it directly:
+  `./Commander-x86_64.AppImage`.
+- **flatpak** — needs `flatpak` with the `org.freedesktop.Sdk//25.08` and
+  `org.freedesktop.Sdk.Extension.rust-stable//25.08` runtimes (installed by
+  the recipe on demand). Produces `commander-0.1.0.flatpak` plus a local repo
+  in `flatpak/build/repo`. Try it with:
+  ```sh
+  just flatpak-run   # installs from the local repo and launches the app
+  ```
+- **snap** — needs `snapcraft` (installed on demand) and an LXD/KVM backend.
+  The build bootstraps a Rust toolchain inside the core22 container, so the
+  host needs no special setup beyond `just vendor`.
+- **docker** — multi-stage build (`docker/Dockerfile`): a reproducible `rust`
+  builder stage plus a slim Ubuntu 24.04 runtime stage with lavapipe (so it
+  also works without a GPU). Run it against your X display:
+  ```sh
+  just docker-run
+  ```
+
+The Flatpak manifest (`flatpak/eu.fangornsrealm.commander.json`) is kept in
+sync with the `just flatpak` recipe for portability to full flatpak builds /
+Flathub.
 
 ## Resources
 

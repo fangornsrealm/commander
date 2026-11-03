@@ -1,0 +1,219 @@
+name: commander
+base: core24
+confinement: strict
+grade: stable
+# Keep in sync with the version in Cargo.toml
+version: "0.1.0"
+summary: Dual panel file manager for the COSMIC desktop environment
+description: |
+  Dual-pane file manager for COSMIC desktop, with tabs, file operations and
+  an integrated terminal. Think of a less cluttered Krusader.
+license: GPL-3.0
+contact: Alexander Schwarzkopf <progs@fangornsrealm.eu>
+website: https://github.com/fangornsrealm/commander
+source-code: https://github.com/fangornsrealm/commander
+issues: https://github.com/fangornsrealm/commander/issues
+
+apps:
+  commander:
+    command: usr/bin/commander
+    # Strict snap rootfs is the base; app files are only reachable through
+    # $SNAP, so data directories are pointed at the snap copies.
+    environment:
+      XKB_CONFIG_ROOT: ${SNAP}/usr/share/X11
+      VK_ICD_FILENAMES: ${SNAP}/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+    plugs:
+      - desktop
+      - desktop-legacy
+      - home
+      - network
+      - opengl
+      - vulkan
+      - wayland
+      - x11
+  vtest:
+    command: usr/bin/vtest
+    environment:
+      VK_ICD_FILENAMES: ${SNAP}/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      VK_LOADER_DEBUG: debug
+    plugs:
+      - x11
+  nsprobe:
+    command: usr/bin/nsprobe
+    plugs:
+      - x11
+
+parts:
+  commander:
+    source: snap-src
+    plugin: nil
+    build-packages:
+      - ca-certificates
+      - curl
+      - dpkg
+      - gcc
+      - libc6-dev
+      # X11 runtime libraries (dlopen'ed by winit-x11 at runtime)
+      - libx11-6
+      - libx11-xcb1
+      - libxau6
+      - libxdmcp6
+      - libxi6
+      - libxext6
+      - libxcb1
+      - libxcb-xkb1
+      - libxcb-randr0
+      - libxcb-dri3-0
+      - libxcb-present0
+      - libxcb-xfixes0
+      - libxcb-sync1
+      - libxcb-shm0
+      - libxfixes3
+      - libxkbcommon-x11-0
+      - libxshmfence1
+      - libwayland-client0
+      - libxkbcommon-dev
+      - libvulkan-dev
+      - libglib2.0-dev
+      - pkg-config
+    override-build: |
+      set -eux
+      # Bootstrap a Rust toolchain into the part (the core24 base has no rust)
+      curl -fsSL https://sh.rustup.rs -o rustup-init.sh
+      export RUSTUP_HOME="$PWD/rustup"
+      export CARGO_HOME="$PWD/.cargo"
+      sh rustup-init.sh -y --profile minimal --default-toolchain stable --no-modify-path
+      export PATH="$CARGO_HOME/bin:$PATH"
+      # All dependencies come from vendor.tar (produced by `just vendor`), so
+      # the build works offline and with private git dependencies
+      tar xf vendor.tar
+      # Link an rpath to the snap's lib dir so the runtime dlopen() of the
+      # X11/Vulkan libraries below resolves inside the snap.
+      export RUSTFLAGS='-C link-args=-Wl,-rpath,$ORIGIN/../lib/x86_64-linux-gnu'
+      cargo build --release --offline --locked
+
+      # X11 runtime shared libraries
+      for lib in \
+        /usr/lib/x86_64-linux-gnu/libX11.so.6 \
+        /usr/lib/x86_64-linux-gnu/libX11-xcb.so.1 \
+        /usr/lib/x86_64-linux-gnu/libXau.so.6 \
+        /usr/lib/x86_64-linux-gnu/libXdmcp.so.6 \
+        /usr/lib/x86_64-linux-gnu/libXi.so.6 \
+        /usr/lib/x86_64-linux-gnu/libXext.so.6 \
+        /usr/lib/x86_64-linux-gnu/libxcb.so.1 \
+        /usr/lib/x86_64-linux-gnu/libxcb-xkb.so.1 \
+        /usr/lib/x86_64-linux-gnu/libxcb-randr.so.0 \
+        /usr/lib/x86_64-linux-gnu/libxcb-dri3.so.0 \
+        /usr/lib/x86_64-linux-gnu/libxcb-present.so.0 \
+        /usr/lib/x86_64-linux-gnu/libxcb-xfixes.so.0 \
+        /usr/lib/x86_64-linux-gnu/libxcb-sync.so.1 \
+        /usr/lib/x86_64-linux-gnu/libxcb-shm.so.0 \
+        /usr/lib/x86_64-linux-gnu/libXfixes.so.3 \
+        /usr/lib/x86_64-linux-gnu/libxkbcommon.so.0 \
+        /usr/lib/x86_64-linux-gnu/libxkbcommon-x11.so.0 \
+        /usr/lib/x86_64-linux-gnu/libxshmfence.so.1 \
+        /usr/lib/x86_64-linux-gnu/libwayland-client.so.0
+      do
+          install -Dm0644 "$lib" "$CRAFT_PART_INSTALL/usr/lib/x86_64-linux-gnu/$(basename "$lib")"
+      done
+      install -Dm0755 target/release/commander "$CRAFT_PART_INSTALL/usr/bin/commander"
+
+      # Desktop integration files
+      install -Dm0644 res/eu.fangornsrealm.commander.desktop "$CRAFT_PART_INSTALL/usr/share/applications/eu.fangornsrealm.commander.desktop"
+      install -Dm0644 res/eu.fangornsrealm.commander.metainfo.xml "$CRAFT_PART_INSTALL/usr/share/metainfo/eu.fangornsrealm.commander.metainfo.xml"
+      install -Dm0644 res/eu.fangornsrealm.commander.svg "$CRAFT_PART_INSTALL/usr/share/icons/hicolor/scalable/apps/eu.fangornsrealm.commander.svg"
+
+      # XKB keymap database (xkbdata ships /usr/share/X11/xkb in core24)
+      install -d "$CRAFT_PART_INSTALL/usr/share/X11/xkb"
+      cp -r /usr/share/X11/xkb/. "$CRAFT_PART_INSTALL/usr/share/X11/xkb/"
+
+      # WSI-capable lavapipe (Vulkan) software renderer. core24's own mesa
+      # lavapipe is built without window-system support, so use the 24.04+
+      # build from the Ubuntu pool (glibc 2.38, loads fine on core24).
+      curl -fsSL -o /tmp/mesa-vulkan-drivers.deb \
+        'http://archive.ubuntu.com/ubuntu/pool/main/m/mesa/mesa-vulkan-drivers_26.0.8-1ubuntu0.3_amd64.deb'
+      curl -fsSL -o /tmp/libllvm21.deb \
+        'http://archive.ubuntu.com/ubuntu/pool/main/l/llvm-toolchain-21/libllvm21_21.1.8-6ubuntu1_amd64.deb'
+      curl -fsSL -o /tmp/libvulkan1.deb \
+        'http://archive.ubuntu.com/ubuntu/pool/main/v/vulkan-loader/libvulkan1_1.4.341.0-1_amd64.deb'
+      curl -fsSL -o /tmp/libdisplay-info3.deb \
+        'http://archive.ubuntu.com/ubuntu/pool/main/libd/libdisplay-info/libdisplay-info3_0.3.0-1_amd64.deb'
+      curl -fsSL -o /tmp/libxml2-16.deb \
+        'http://archive.ubuntu.com/ubuntu/pool/main/libx/libxml2/libxml2-16_2.15.2%2Bdfsg-0.1ubuntu0.3_amd64.deb'
+      curl -fsSL -o /tmp/libwayland-client0.deb \
+        'http://archive.ubuntu.com/ubuntu/pool/main/w/wayland/libwayland-client0_1.24.0-2_amd64.deb'
+      # The 26.08 lavapipe ICD is linked against the 26.04 X11 stack
+      # (xcb 1.17, X11 1.8.13, xkbcommon 1.13); bundle those exact versions.
+      for spec in \
+        'libx/libxcb/libxcb1_1.17.0-2ubuntu1_amd64.deb:libxcb1' \
+        'libx/libxcb/libxcb-randr0_1.17.0-2ubuntu1_amd64.deb:libxcb-randr0' \
+        'libx/libxcb/libxcb-dri3-0_1.17.0-2ubuntu1_amd64.deb:libxcb-dri3' \
+        'libx/libxcb/libxcb-present0_1.17.0-2ubuntu1_amd64.deb:libxcb-present' \
+        'libx/libxcb/libxcb-xfixes0_1.17.0-2ubuntu1_amd64.deb:libxcb-xfixes' \
+        'libx/libxcb/libxcb-sync1_1.17.0-2ubuntu1_amd64.deb:libxcb-sync' \
+        'libx/libxcb/libxcb-shm0_1.17.0-2ubuntu1_amd64.deb:libxcb-shm' \
+        'libx/libxcb/libxcb-dri2-0_1.17.0-2ubuntu1_amd64.deb:libxcb-dri2' \
+        'libx/libx11/libx11-6_1.8.13-1ubuntu0.1_amd64.deb:libx11' \
+        'libx/libx11/libx11-xcb1_1.8.13-1ubuntu0.1_amd64.deb:libx11-xcb' \
+        'libx/libxkbcommon/libxkbcommon0_1.13.1-1_amd64.deb:libxkbcommon' \
+        'libx/libxkbcommon/libxkbcommon-x11-0_1.13.1-1_amd64.deb:libxkbcommon-x11' \
+        'libx/libxshmfence/libxshmfence1_1.3.3-1build1_amd64.deb:libxshmfence'
+      do
+          path="${spec%%:*}"
+          name="${spec##*:}"
+          curl -fsSL -o "/tmp/x11-$name.deb" \
+            "http://archive.ubuntu.com/ubuntu/pool/main/$path"
+          dpkg-deb -x "/tmp/x11-$name.deb" "/tmp/x11-$name"
+      done
+      dpkg-deb -x /tmp/mesa-vulkan-drivers.deb /tmp/mesa
+      dpkg-deb -x /tmp/libllvm21.deb /tmp/llvm
+      dpkg-deb -x /tmp/libvulkan1.deb /tmp/vulk
+      dpkg-deb -x /tmp/libdisplay-info3.deb /tmp/ldi
+      dpkg-deb -x /tmp/libxml2-16.deb /tmp/xml2
+      dpkg-deb -x /tmp/libwayland-client0.deb /tmp/wl
+      install -Dm0644 /tmp/mesa/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so "$CRAFT_PART_INSTALL/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so"
+      install -Dm0644 /tmp/llvm/usr/lib/x86_64-linux-gnu/libLLVM.so.21.1 "$CRAFT_PART_INSTALL/usr/lib/x86_64-linux-gnu/libLLVM.so.21.1"
+      install -Dm0644 /tmp/vulk/usr/lib/x86_64-linux-gnu/libvulkan.so.1 "$CRAFT_PART_INSTALL/usr/lib/x86_64-linux-gnu/libvulkan.so.1"
+      install -Dm0644 /tmp/ldi/usr/lib/x86_64-linux-gnu/libdisplay-info.so.3 "$CRAFT_PART_INSTALL/usr/lib/x86_64-linux-gnu/libdisplay-info.so.3"
+      install -Dm0644 /tmp/xml2/usr/lib/x86_64-linux-gnu/libxml2.so.16 "$CRAFT_PART_INSTALL/usr/lib/x86_64-linux-gnu/libxml2.so.16"
+      install -Dm0644 /tmp/wl/usr/lib/x86_64-linux-gnu/libwayland-client.so.0 "$CRAFT_PART_INSTALL/usr/lib/x86_64-linux-gnu/libwayland-client.so.0"
+      for spec in \
+        'libxcb1:libxcb.so.1' \
+        'libxcb-randr0:libxcb-randr.so.0' \
+        'libxcb-dri3:libxcb-dri3.so.0' \
+        'libxcb-present:libxcb-present.so.0' \
+        'libxcb-xfixes:libxcb-xfixes.so.0' \
+        'libxcb-sync:libxcb-sync.so.1' \
+        'libxcb-shm:libxcb-shm.so.0' \
+        'libxcb-dri2:libxcb-dri2.so.0' \
+        'libx11:libX11.so.6' \
+        'libx11-xcb:libX11-xcb.so.1' \
+        'libxkbcommon:libxkbcommon.so.0' \
+        'libxkbcommon-x11:libxkbcommon-x11.so.0' \
+        'libxshmfence:libxshmfence.so.1'
+      do
+          name="${spec%%:*}"
+          lib="${spec##*:}"
+          install -Dm0644 "/tmp/x11-$name/usr/lib/x86_64-linux-gnu/$lib" \
+            "$CRAFT_PART_INSTALL/usr/lib/x86_64-linux-gnu/$lib"
+      done
+
+      # TEMP DEBUG: Vulkan ICD enumeration probe
+      install -d "$CRAFT_PART_INSTALL/usr/bin"
+      cp scripts/vktest.c /tmp/vktest.c
+      gcc -o "$CRAFT_PART_INSTALL/usr/bin/vtest" /tmp/vktest.c -lvulkan
+      cp scripts/nsprobe.c /tmp/nsprobe.c
+      gcc -o "$CRAFT_PART_INSTALL/usr/bin/nsprobe" /tmp/nsprobe.c
+
+      # Vulkan ICD manifest for the bundled lavapipe renderer. library_path
+      # is a bare soname so the loader resolves it through LD_LIBRARY_PATH
+      # to the bundled copy (strict snap rootfs is the core24 base).
+      install -d "$CRAFT_PART_INSTALL/usr/share/vulkan/icd.d"
+      printf '%s\n' \
+        '{' \
+        '    "ICD": {' \
+        '        "api_version": "1.4.341",' \
+        '        "library_path": "libvulkan_lvp.so"' \
+        '    },' \
+        '    "file_format_version": "1.0.0"' \
+        '}' > "$CRAFT_PART_INSTALL/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"

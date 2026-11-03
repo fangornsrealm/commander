@@ -1,0 +1,11 @@
+#TODO: more build-out, desktop actions, translations?
+[Desktop Entry]
+Name=Commander
+Exec=commander %F
+Terminal=false
+Type=Application
+StartupNotify=true
+Icon=eu.fangornsrealm.commander
+Categories=Utility;Filesystem;
+Keywords=Folder;Manager;Dualpanel
+MimeType=inode/directory;

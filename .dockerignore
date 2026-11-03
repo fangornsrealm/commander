@@ -1,0 +1,13 @@
+.git
+.cargo
+vendor-snapshot
+target
+samples
+AppDir
+Commander-x86_64.AppImage
+commander-*.flatpak
+commander_*.snap
+tools
+flatpak/build
+snap-src
+*.snap

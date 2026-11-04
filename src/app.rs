@@ -1136,6 +1136,7 @@ impl App {
         let mut tab;
         let tabconfig = self.config.tab_right;
         tab = Tab2::new(location.clone(), tabconfig);
+        tab.pane_id = 1;
 
         tab.mode = match self.mode {
             Mode::App => tab2::Mode::App,
@@ -8960,6 +8961,7 @@ pub(crate) mod test_utils {
         let location = Location2::Path(path.to_owned());
         let (parent_item_opt, items) = location.scan(IconSizes::default());
         let mut tab = Tab2::new(location, TabConfig2::default());
+        tab.pane_id = 1;
         tab.parent_item_opt = parent_item_opt;
         tab.set_items(items);
 

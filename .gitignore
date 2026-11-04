@@ -9,3 +9,4 @@ commander_*.snap
 /flatpak/build
 snap-src
 *.snap
+*.tar

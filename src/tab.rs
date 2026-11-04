@@ -1893,6 +1893,9 @@ pub struct Tab {
     selected_clicked: bool,
     last_right_click: Option<usize>,
     search_context: Option<SearchContext>,
+    /// Pane discriminator (0=left, 1=right) so DnD drag_ids stay unique across
+    /// both panels even when both show the same location.
+    pub pane_id: u64,
 }
 
 fn calculate_dir_size(path: &Path, controller: Controller) -> Result<u64, String> {
@@ -1977,6 +1980,7 @@ impl Tab {
             selected_clicked: false,
             last_right_click: None,
             search_context: None,
+            pane_id: 0,
         }
     }
 
@@ -3392,7 +3396,7 @@ impl Tab {
         let location2 = location.clone();
         let location3 = location.clone();
         let is_dnd_hovered = self.dnd_hovered.as_ref().map(|(l, _)| l) == Some(location);
-        let drag_id = 2000u64.wrapping_add(
+        let drag_id = (2000u64 + self.pane_id * 1_000_000).wrapping_add(
             location.to_string().bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64)),
         );
         let mut container = widget::container(
@@ -4728,7 +4732,7 @@ impl Tab {
 
         let tab_location_2 = self.location.clone();
         let tab_location_3 = self.location.clone();
-        let drag_id = 3000u64.wrapping_add(
+        let drag_id = (3000u64 + self.pane_id * 1_000_000).wrapping_add(
             self.location.to_string().bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64)),
         );
         let dnd_dest = DndDestination::for_data(tab_view, move |data, action| {

@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Navigation panel can now create new tabs with locations and change the location of the current tab
 - Copy and move of tabs between panes works again
 - Drag and drop from Commander to other applications now works
+- Drag and drop of files into Commander now works (enabled the missing `wayland` feature)
 - Scroll handle is now grabbable
 - Settings for optional panels now correctly activate/deactivate the optional panels
 - Tab scrollable no longer jumps back to the start at every update

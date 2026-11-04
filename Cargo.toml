@@ -77,7 +77,7 @@ git = "https://github.com/pop-os/libcosmic.git"
 rev = "95236a944bfd51c63a2fc65fe50a592c47168d40"
 default-features = false
 #TODO: a11y feature crashes
-features = ["multi-window", "tokio", "winit", "wgpu"]
+features = ["multi-window", "tokio", "winit", "wgpu", "wayland"]
 
 [dependencies.cosmic-text]
 version = "0.19"
